@@ -232,7 +232,10 @@ class PlayerHub extends ChangeNotifier {
       return;
     }
     if (_retrying) return;
-    _error = 'Playback error';
+    final why = e.split('?').first.trim();
+    _error = why.isEmpty
+        ? 'Playback error'
+        : 'Playback error: ${why.length > 90 ? why.substring(0, 90) : why}';
     notifyListeners();
   }
 

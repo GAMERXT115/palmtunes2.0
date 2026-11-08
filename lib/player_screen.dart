@@ -393,6 +393,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                   ),
                 ),
               ),
+              _UpNextBar(hub: hub, onOpen: _openQueue),
             ],
           ),
         ),
@@ -801,6 +802,100 @@ class _SeekBarState extends State<_SeekBar> {
           },
         );
       },
+    );
+  }
+}
+
+/// The arrow at the bottom of the player: shows what plays next (a recommended
+/// song, or the next one in the queue). Tap it or swipe up to open the list.
+class _UpNextBar extends StatelessWidget {
+  final PlayerHub hub;
+  final VoidCallback onOpen;
+  const _UpNextBar({required this.hub, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final recommended = hub.autoRecommend;
+    String? title;
+    String? thumb;
+    if (recommended) {
+      final first = hub.recommendations.firstOrNull;
+      title = first?.title;
+      thumb = first?.thumbnailUrl;
+    } else if (hub.index >= 0 && hub.index + 1 < hub.queue.length) {
+      final next = hub.queue[hub.index + 1];
+      title = next.title;
+      thumb = next.thumbnailUrl;
+    }
+    final label = recommended ? 'Recommended' : 'Up next';
+    final loading = recommended && hub.recommendationsLoading && title == null;
+
+    return SafeArea(
+      top: false,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onOpen,
+        onVerticalDragEnd: (d) {
+          if ((d.primaryVelocity ?? 0) < -150) onOpen();
+        },
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+          padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: accent.withValues(alpha: 0.28)),
+          ),
+          child: Row(
+            children: [
+              if (thumb != null)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    width: 52,
+                    height: 30,
+                    child: ThumbImage(source: thumb),
+                  ),
+                )
+              else
+                Icon(Icons.queue_music_rounded, color: accent, size: 24),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        color: accent,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                    Text(
+                      loading ? 'Finding songs...' : (title ?? 'Open the queue'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.keyboard_arrow_up_rounded,
+                color: Colors.white70,
+                size: 30,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
@@ -457,7 +458,7 @@ class _PreviewCard extends StatelessWidget {
                                   controller.value.previewSize?.height ?? 480,
                               height:
                                   controller.value.previewSize?.width ?? 640,
-                              child: CameraPreview(controller),
+                              child: _selfieView(controller),
                             ),
                           ),
                           ValueListenableBuilder<List<Hand>>(
@@ -517,6 +518,16 @@ class _PreviewCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Android shows the front camera un-mirrored; the hands are mirrored for the
+/// engine (selfie view), so mirror the picture too and the two line up.
+Widget _selfieView(CameraController controller) {
+  final preview = CameraPreview(controller);
+  final front = controller.description.lensDirection == CameraLensDirection.front;
+  return (Platform.isAndroid && front)
+      ? Transform.flip(flipX: true, child: preview)
+      : preview;
 }
 
 class _HandsPainter extends CustomPainter {

@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui';
+
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -57,12 +60,49 @@ class Notch extends ChangeNotifier {
   }
 }
 
+enum _Cutout { none, notch, island }
+
+/// Works out what is at the top edge of the screen from the safe-area inset:
+/// iPhone X to 14 (and 16e) have a notch (inset 44 to 50), iPhone 14 Pro and
+/// newer have the Dynamic Island (inset 54 to 62). Everything else gets the
+/// plain pill below the status bar.
+_Cutout _cutoutFor(BuildContext context) {
+  if (defaultTargetPlatform != TargetPlatform.iOS) return _Cutout.none;
+  final inset = MediaQuery.viewPaddingOf(context).top;
+  if (inset >= 54) return _Cutout.island;
+  if (inset >= 40) return _Cutout.notch;
+  return _Cutout.none;
+}
+
 class NotchHost extends StatelessWidget {
   const NotchHost({super.key});
 
   @override
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.primary;
+    final cutout = _cutoutFor(context);
+    final inset = MediaQuery.viewPaddingOf(context).top;
+
+    if (cutout != _Cutout.none) {
+      return Positioned(
+        top: 0,
+        left: 0,
+        right: 0,
+        child: IgnorePointer(
+          child: ListenableBuilder(
+            listenable: Notch.instance,
+            builder: (context, _) => _HardwareNotch(
+              cutout: cutout,
+              inset: inset,
+              message: Notch.instance.message,
+              visible: Notch.instance.visible,
+              accent: accent,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Positioned(
       top: MediaQuery.paddingOf(context).top,
       left: 0,
@@ -93,6 +133,177 @@ class NotchHost extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A solid black shape that grows out of the real notch / Dynamic Island, so
+/// it looks like the hardware itself is expanding to show the message.
+class _HardwareNotch extends StatelessWidget {
+  final _Cutout cutout;
+  final double inset;
+  final NotchMessage? message;
+  final bool visible;
+  final Color accent;
+
+  const _HardwareNotch({
+    required this.cutout,
+    required this.inset,
+    required this.message,
+    required this.visible,
+    required this.accent,
+  });
+
+  static const double _islandW = 126;
+  static const double _islandH = 37;
+  static const double _islandTop = 11;
+  static const double _notchW = 170;
+  static const double _bandH = 36;
+
+  @override
+  Widget build(BuildContext context) {
+    final screenW = MediaQuery.sizeOf(context).width;
+    final island = cutout == _Cutout.island;
+
+    final collapsedW = island ? _islandW : _notchW;
+    final collapsedH = island ? _islandH : inset - 4;
+    final expandedW = island
+        ? math.min(screenW - 24, 340.0)
+        : math.min(screenW - 110, 270.0);
+    final expandedH = island ? _islandH + _bandH + 4 : inset + _bandH;
+    final width = visible ? expandedW : collapsedW;
+    final height = visible ? expandedH : collapsedH;
+
+    final radius = island
+        ? BorderRadius.circular(visible ? 34 : _islandH / 2)
+        : const BorderRadius.vertical(bottom: Radius.circular(28));
+
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: EdgeInsets.only(top: island ? _islandTop : 0),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 460),
+          curve: Curves.easeInOutCubicEmphasized,
+          width: width,
+          height: height,
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: radius,
+            boxShadow: [
+              BoxShadow(
+                color: accent.withValues(alpha: visible ? 0.28 : 0),
+                blurRadius: 22,
+              ),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: radius,
+            child: OverflowBox(
+              alignment: Alignment.topCenter,
+              minWidth: expandedW,
+              maxWidth: expandedW,
+              minHeight: expandedH,
+              maxHeight: expandedH,
+              child: AnimatedOpacity(
+                opacity: visible ? 1 : 0,
+                duration: Duration(milliseconds: visible ? 320 : 160),
+                curve: visible ? const Interval(0.35, 1) : Curves.easeIn,
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: message == null
+                      ? const SizedBox.shrink()
+                      : (island
+                            ? _islandContent(message!)
+                            : _notchContent(message!)),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _islandContent(NotchMessage m) {
+    return Column(
+      children: [
+        // Top row sits beside the island: icon on its left, pulse on its right.
+        SizedBox(
+          height: _islandH,
+          child: Row(
+            children: [
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 18),
+                    child: Icon(m.icon, size: 18, color: accent),
+                  ),
+                ),
+              ),
+              const SizedBox(width: _islandW),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 18),
+                    child: Icon(
+                      Icons.graphic_eq_rounded,
+                      size: 18,
+                      color: accent.withValues(alpha: 0.75),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 2, 20, 0),
+          child: _messageText(m),
+        ),
+      ],
+    );
+  }
+
+  Widget _notchContent(NotchMessage m) {
+    return Column(
+      children: [
+        SizedBox(height: inset - 2),
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(m.icon, size: 16, color: accent),
+                  const SizedBox(width: 8),
+                  Flexible(child: _messageText(m)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _messageText(NotchMessage m) => AnimatedSwitcher(
+    duration: const Duration(milliseconds: 200),
+    child: Text(
+      m.text,
+      key: ValueKey(m.id),
+      maxLines: 1,
+      textAlign: TextAlign.center,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        decoration: TextDecoration.none,
+      ),
+    ),
+  );
 }
 
 class _NotchBody extends StatelessWidget {

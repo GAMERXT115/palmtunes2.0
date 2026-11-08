@@ -25,21 +25,11 @@ class BassMeter {
   static const String _metaKey =
       'af-metadata/$_label/lavfi.astats.Overall.RMS_level';
 
-  /// Puts the pass-through filter on a player. Safe to call on any player.
-  static void attachFilter(Player player) {
-    final native = player.platform;
-    if (native is! NativePlayer) return;
-    unawaited(() async {
-      try {
-        await native.setProperty(
-          'af',
-          '@$_label:lavfi=[astats=metadata=1:reset=1]',
-        );
-      } catch (e) {
-        debugPrint('[PalmTunes] Could not attach the bass filter -> $e');
-      }
-    }());
-  }
+  /// Kept so the player can call it; it does nothing now. An earlier build
+  /// put an `astats` filter on the player to read loudness, but if a phone's
+  /// libmpv lacks that filter it can silence the sound or fail playback, so
+  /// the audio chain is left completely untouched.
+  static void attachFilter(Player player) {}
 
   static const Duration _tickEvery = Duration(milliseconds: 16);
   static const Duration _pollEvery = Duration(milliseconds: 33);
@@ -59,7 +49,7 @@ class BassMeter {
   bool _polling = false;
   bool _disposed = false;
   bool _wantInput = false;
-  bool _fallback = false;
+  bool _fallback = true;
   int _misses = 0;
   int _lastMs = 0;
   double _peak = _minPeakDb;
@@ -130,10 +120,17 @@ class BassMeter {
     return double.tryParse(raw);
   }
 
+  /// A beat pattern that follows the play state. Each song gets its own tempo
+  /// (from its id) so different songs do not pulse identically.
   double _synthetic() {
+    final id = hub.current?.videoId ?? '';
+    final bpm = 92 + (id.hashCode.abs() % 44);
     final t = _clock.elapsedMilliseconds / 1000.0;
-    final beat = pow(max(0.0, sin(t * 2 * pi * 1.9)), 3).toDouble();
-    return -30 + beat * 14 + Random().nextDouble() * 3;
+    final phase = (t * bpm / 60.0) % 1.0;
+    final kick = exp(-phase * 5.5);
+    final off = exp(-((phase + 0.5) % 1.0) * 9.0) * 0.45;
+    final wobble = 0.5 + 0.5 * sin(t * 1.7 + id.hashCode % 7);
+    return -36 + 22 * max(kick, off) + 3 * wobble + Random().nextDouble() * 2;
   }
 
   void _push(double db) {

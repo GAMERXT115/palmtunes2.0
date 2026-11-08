@@ -766,6 +766,12 @@ class _SongTile extends StatelessWidget {
     return Dismissible(
       key: ValueKey('dismiss-${entry.id}'),
       direction: DismissDirection.endToStart,
+      confirmDismiss: (_) => confirmDelete(
+        context,
+        title: 'Delete song?',
+        message: '"${entry.title}" will be removed from your list.',
+        confirmLabel: 'Delete',
+      ),
       onDismissed: (_) => store.remove(entry.id),
       background: Container(
         alignment: Alignment.centerRight,

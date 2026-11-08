@@ -1,3 +1,6 @@
+import 'dart:math';
+import 'dart:ui';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
@@ -411,9 +414,7 @@ class SettingsScreen extends StatelessWidget {
           icon: Icons.info_rounded,
           children: [
             const _InfoRow(title: 'Palm Tunes', value: 'Version 1.0.0'),
-            _LinkRow(
-              icon: Icons.language_rounded,
-              title: 'Ham-Tech Solutions',
+            _HamTechRow(
               onTap: () => launchUrl(
                 Uri.parse(hamTechUrl),
                 mode: LaunchMode.externalApplication,
@@ -838,4 +839,171 @@ class _GestureCheatSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+
+class _HamTechRow extends StatelessWidget {
+  final VoidCallback onTap;
+  const _HamTechRow({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          const _LaserBadge(label: 'Ham-Tech'),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Built by Ham-Tech',
+                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'ham-tech.netlify.app',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: Colors.white54, fontSize: 11.5),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: onTap,
+            icon: Icon(Icons.open_in_new_rounded, color: accent, size: 20),
+            tooltip: 'Visit site',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LaserBadge extends StatefulWidget {
+  final String label;
+  const _LaserBadge({required this.label});
+
+  @override
+  State<_LaserBadge> createState() => _LaserBadgeState();
+}
+
+class _LaserBadgeState extends State<_LaserBadge>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2600),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return CustomPaint(
+      foregroundPainter: _LaserPainter(progress: _ctrl, color: accent, radius: 11),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(11),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.bolt_rounded, size: 16, color: accent),
+            const SizedBox(width: 5),
+            Text(
+              widget.label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LaserPainter extends CustomPainter {
+  final Animation<double> progress;
+  final Color color;
+  final double radius;
+
+  _LaserPainter({required this.progress, required this.color, required this.radius})
+    : super(repaint: progress);
+
+  static const int _pieces = 28;
+  static const double _tailFraction = 0.3;
+
+  void _drawSegment(Canvas canvas, PathMetric metric, double start, double end, Paint paint) {
+    final len = metric.length;
+    final span = end - start;
+    if (span <= 0) return;
+    final s = ((start % len) + len) % len;
+    final e = s + span;
+    if (e <= len) {
+      canvas.drawPath(metric.extractPath(s, e), paint);
+    } else {
+      canvas.drawPath(metric.extractPath(s, len), paint);
+      canvas.drawPath(metric.extractPath(0, e - len), paint);
+    }
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rrect = RRect.fromRectAndRadius(
+      (Offset.zero & size).deflate(0.75),
+      Radius.circular(radius),
+    );
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = color.withValues(alpha: 0.25),
+    );
+    final metric = (Path()..addRRect(rrect)).computeMetrics().first;
+    final len = metric.length;
+    final head = progress.value * len;
+    final tail = len * _tailFraction;
+
+    for (var i = _pieces - 1; i >= 0; i--) {
+      final t1 = head - tail * i / _pieces;
+      final t0 = head - tail * (i + 1) / _pieces;
+      final strength = pow(1 - i / _pieces, 1.6).toDouble();
+      final pieceColor = Color.lerp(color, Colors.white, strength * 0.7)!;
+
+      final glow = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = 4
+        ..color = color.withValues(alpha: 0.55 * strength)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+      _drawSegment(canvas, metric, t0, t1, glow);
+
+      final core = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeWidth = 1.6
+        ..color = pieceColor.withValues(alpha: strength);
+      _drawSegment(canvas, metric, t0, t1, core);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LaserPainter old) =>
+      old.color != color || old.radius != radius;
 }
