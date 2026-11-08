@@ -1,0 +1,18 @@
+name: palmtunes_hands
+description: iOS hand-landmark tracking for Palm Tunes (MediaPipe). Android uses the hand_landmarker plugin instead.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.5
+  flutter: ">=3.3.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        pluginClass: PalmtunesHandsPlugin
