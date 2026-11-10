@@ -1506,22 +1506,6 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
               ],
             ),
           ),
-          if (_dragging)
-            Padding(
-              padding: const EdgeInsets.only(top: 8, bottom: 2),
-              child: Row(
-                children: [
-                  Icon(Icons.touch_app_rounded, size: 16, color: accent),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'Drop on a playlist to add it, or on All to take it out',
-                      style: TextStyle(color: Colors.white70, fontSize: 12.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
           const SizedBox(height: 10),
           if (queue.isNotEmpty) ...[
             _QueuePanel(

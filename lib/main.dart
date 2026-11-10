@@ -52,6 +52,7 @@ Future<void> main() async {
   downloads.resumeQueue();
 
   final hub = PlayerHub(settings: settings, downloads: downloads);
+  await hub.initDeviceVolume();
   final meter = BassMeter(hub);
   final gestures = GestureBridge(hub);
   await gestures.load();

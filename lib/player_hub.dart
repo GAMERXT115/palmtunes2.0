@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -319,6 +320,8 @@ class PlayerHub extends ChangeNotifier {
     _index = i;
     _loading = true;
     _error = null;
+    _audioSrc = null;
+    _audioHeaders = null;
     if (!retry) _retries = 0;
     final token = ++_token;
     notifyListeners();
@@ -660,7 +663,7 @@ class PlayerHub extends ChangeNotifier {
     final eased = Curves.easeInOutCubic.transform(t);
     crossfadeProgress.value = eased;
 
-    final base = _muted ? 0.0 : _volume;
+    const base = 100.0;
     unawaited(incoming.setVolume(base * sin(eased * pi / 2)));
     unawaited(outgoing.setVolume(base * cos(eased * pi / 2)));
     if (xf.linear >= 1) _endCrossfade(xf);
@@ -676,7 +679,7 @@ class PlayerHub extends ChangeNotifier {
       unawaited(out.stop());
       unawaited(out.setVolume(0));
     }
-    unawaited(_active.setVolume(_muted ? 0 : _volume));
+    unawaited(_active.setVolume(100));
     crossfadeProgress.value = 1;
     notifyListeners();
   }
@@ -896,14 +899,49 @@ class PlayerHub extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> toggleMute() async {
-    _muted = !_muted;
+  // ---------------------------------------------------------------------
+  // Volume: the phone's own volume (the one the side buttons change).
+  // ---------------------------------------------------------------------
+
+  StreamSubscription<double>? _volumeSub;
+
+  /// Starts following the phone volume. Call once at start-up.
+  Future<void> initDeviceVolume() async {
+    try {
+      await FlutterVolumeController.updateShowSystemUI(true);
+    } catch (_) {}
+    try {
+      if (Platform.isAndroid) {
+        await FlutterVolumeController.setAndroidAudioStream(
+          stream: AudioStream.music,
+        );
+      }
+    } catch (_) {}
+    try {
+      final v = await FlutterVolumeController.getVolume();
+      if (v != null) {
+        _volume = v * 100;
+        _muted = v <= 0;
+      }
+    } catch (_) {}
+    try {
+      _volumeSub = FlutterVolumeController.addListener((v) {
+        _volume = v * 100;
+        _muted = v <= 0.001;
+        notifyListeners();
+      }, emitOnStart: false);
+    } catch (e) {
+      debugPrint('[PalmTunes] Could not follow the phone volume -> $e');
+    }
     notifyListeners();
-    Notch.show(
-      _muted ? 'Mute On' : 'Mute Off',
-      icon: _muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-    );
-    await player.setVolume(_muted ? 0 : _volume);
+  }
+
+  Future<void> toggleMute() async {
+    try {
+      await FlutterVolumeController.setMute(!_muted);
+    } catch (e) {
+      debugPrint('[PalmTunes] Could not mute -> $e');
+    }
   }
 
   Future<void> setMuted(bool value) async {
@@ -911,32 +949,22 @@ class PlayerHub extends ChangeNotifier {
     await toggleMute();
   }
 
-  /// Sets the volume straight to a level (used by the slider; no popup).
-  Future<void> setVolumeLevel(double value) async {
-    _volume = value.clamp(0, 100).toDouble();
-    _muted = false;
-    await player.setVolume(_volume);
-    notifyListeners();
-  }
-
+  /// Moves the phone volume up or down. [delta] is in percent of the full
+  /// range; on Android it snaps to the system's own volume steps.
   Future<void> changeVolume(int delta) async {
-    _volume = (_volume + delta).clamp(0, 100).toDouble();
-    _muted = false;
-    await player.setVolume(_volume);
-    notifyListeners();
-    final IconData icon;
-    if (_volume == 0) {
-      icon = Icons.volume_off_rounded;
-    } else if (_volume < 50) {
-      icon = Icons.volume_down_rounded;
-    } else {
-      icon = Icons.volume_up_rounded;
+    try {
+      if (delta > 0) {
+        await FlutterVolumeController.raiseVolume(
+          Platform.isAndroid ? null : 0.0625,
+        );
+      } else if (delta < 0) {
+        await FlutterVolumeController.lowerVolume(
+          Platform.isAndroid ? null : 0.0625,
+        );
+      }
+    } catch (e) {
+      debugPrint('[PalmTunes] Could not change the volume -> $e');
     }
-    Notch.show(
-      'Volume ${_volume.round()}%',
-      icon: icon,
-      duration: const Duration(milliseconds: 1200),
-    );
   }
 
   Future<void> setFullscreen(bool value) async {
@@ -999,6 +1027,7 @@ class PlayerHub extends ChangeNotifier {
     for (final s in _subs) {
       s.cancel();
     }
+    _volumeSub?.cancel();
     _xf?.timer?.cancel();
     _active.dispose();
     _spare?.dispose();

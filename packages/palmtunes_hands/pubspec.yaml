@@ -1,6 +1,6 @@
 name: palmtunes_hands
-description: iOS hand-landmark tracking for Palm Tunes (MediaPipe). Android uses the hand_landmarker plugin instead.
-version: 1.0.0
+description: Native helpers for Palm Tunes - iOS hand tracking (MediaPipe) and the song bass analyzer for Android and iOS.
+version: 1.1.0
 publish_to: none
 
 environment:
@@ -14,5 +14,8 @@ dependencies:
 flutter:
   plugin:
     platforms:
+      android:
+        package: com.palmtunes.hands
+        pluginClass: PalmtunesHandsPlugin
       ios:
         pluginClass: PalmtunesHandsPlugin

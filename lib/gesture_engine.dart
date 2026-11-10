@@ -578,7 +578,11 @@ class GestureEngine {
       _knobPending = null;
       return;
     }
-    final up = offset > 0;
+    // On the phone camera view a turn to the user's RIGHT makes the angle
+    // shrink (offset < 0). Turning right must raise the volume and turning
+    // left must lower it, so volume goes up when the offset is negative.
+    final clockwise = offset > 0;
+    final up = !clockwise;
     final pending = _knobPending;
     if (pending == null || pending.$1 != up) {
       _knobPending = (up, now);
@@ -586,7 +590,7 @@ class GestureEngine {
     }
     if (now - pending.$2 < _knobCommitDelay) return;
     _knobPending = null;
-    _knobRef += up ? _knobStep : -_knobStep;
+    _knobRef += clockwise ? _knobStep : -_knobStep;
     _stepVolume(up, now);
   }
 

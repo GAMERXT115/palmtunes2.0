@@ -329,16 +329,32 @@ class _ListScreenState extends State<ListScreen> {
     setState(() => _exporting = true);
     try {
       final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/Palm Tunes List ${_dateStamp()}.xlsx');
+      final file = File('${dir.path}/Palm_Tunes_List_${_dateStamp()}.xlsx');
       await file.writeAsBytes(buildSongWorkbook(songs), flush: true);
       if (!mounted) return;
+      final box = context.findRenderObject() as RenderBox?;
       await SharePlus.instance.share(
-        ShareParams(files: [XFile(file.path)], subject: 'Palm Tunes song list'),
+        ShareParams(
+          files: [
+            XFile(
+              file.path,
+              mimeType:
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              name: 'Palm_Tunes_List_${_dateStamp()}.xlsx',
+            ),
+          ],
+          fileNameOverrides: ['Palm_Tunes_List_${_dateStamp()}.xlsx'],
+          subject: 'Palm Tunes song list',
+          sharePositionOrigin: box == null
+              ? null
+              : box.localToGlobal(Offset.zero) & box.size,
+        ),
       );
     } catch (e) {
       debugPrint('[PalmTunes] Export failed -> $e');
+      final why = '$e'.replaceAll('\n', ' ');
       Notch.show(
-        'Could not export the list',
+        'Export failed: ${why.length > 60 ? why.substring(0, 60) : why}',
         icon: Icons.error_outline_rounded,
       );
     } finally {

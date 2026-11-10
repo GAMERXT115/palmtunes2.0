@@ -1,35 +1,39 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import 'player_hub.dart';
+import 'yt_streams.dart';
 
-/// Live punch level (0..1) of whatever Palm Tunes is playing.
+/// Live bass level (0..1) of whatever Palm Tunes is playing.
 ///
-/// Phones do not let an app listen to the system output (no WASAPI loopback),
-/// so this taps the player itself: every player gets a pass-through audio
-/// filter (`astats`) that leaves the sound untouched and only publishes its
-/// loudness as metadata. [BassMeter] reads that ~30x per second and runs it
-/// through the same fast-attack / fast-release envelope the desktop app used,
-/// so the visuals hit on every kick.
+/// This is real: the song's own audio is decoded on the phone (Android
+/// MediaCodec / iOS AVFoundation, in `packages/palmtunes_hands`), run through
+/// the same 150 Hz low-pass the desktop meter used, and turned into one
+/// loudness number every 20 ms. While the song plays, the meter reads that
+/// list at the current position and feeds it through the desktop app's
+/// fast-attack / fast-release envelope, so the visuals hit on every kick.
 ///
-/// If a build of libmpv does not ship that filter, the meter notices (no
-/// numbers arrive) and switches to a gentle synthetic pulse so the UI still
-/// moves. [usingFallback] tells you which one is running.
+/// A song needs a few seconds of analysis the first time it plays (streamed
+/// songs are fetched once more for this). Until that is ready the level stays
+/// at zero, it is never faked.
 class BassMeter {
-  static const String _label = 'bass';
-  static const String _metaKey =
-      'af-metadata/$_label/lavfi.astats.Overall.RMS_level';
-
-  /// Kept so the player can call it; it does nothing now. An earlier build
-  /// put an `astats` filter on the player to read loudness, but if a phone's
-  /// libmpv lacks that filter it can silence the sound or fail playback, so
-  /// the audio chain is left completely untouched.
+  /// Kept so the player can call it; the player's own audio is never touched.
   static void attachFilter(Player player) {}
+
+  static const MethodChannel _channel = MethodChannel('palmtunes/bass');
+  static const double _windowMs = 20;
+  static const int _lookAheadMs = 40;
+  static const int _cacheSongs = 12;
 
   static const Duration _tickEvery = Duration(milliseconds: 16);
   static const Duration _pollEvery = Duration(milliseconds: 33);
@@ -38,26 +42,26 @@ class BassMeter {
   static const double _peakFallDbPerSec = 4;
   static const double _punchRangeDb = 6;
   static const double _releaseSeconds = 0.07;
-  static const int _missesBeforeFallback = 90;
 
   final PlayerHub hub;
   final ValueNotifier<double> level = ValueNotifier<double>(0);
 
+  final Map<String, Float64List> _cache = {};
+  final List<String> _cacheOrder = [];
+  String? _forId;
+  String? _analyzingId;
+  Float64List? _env;
+
   final Stopwatch _clock = Stopwatch()..start();
   Timer? _tickTimer;
   Timer? _pollTimer;
-  bool _polling = false;
   bool _disposed = false;
   bool _wantInput = false;
-  bool _fallback = true;
-  int _misses = 0;
   int _lastMs = 0;
   double _peak = _minPeakDb;
   double? _avg;
-  double _env = 0;
+  double _env01 = 0;
   double _target = 0;
-
-  bool get usingFallback => _fallback;
 
   BassMeter(this.hub) {
     hub.addListener(_sync);
@@ -66,71 +70,99 @@ class BassMeter {
 
   void _sync() {
     if (_disposed) return;
-    _wantInput = hub.current != null && hub.isPlaying;
+    final item = hub.current;
+    if (item?.videoId != _forId) {
+      _forId = item?.videoId;
+      _env = _forId == null ? null : _cache[_forId];
+      _peak = _minPeakDb;
+      _avg = null;
+    }
+    if (item != null && _env == null && _analyzingId != item.videoId) {
+      final src = hub.audioSource;
+      if (src != null && !hub.isLoading) {
+        unawaited(_analyze(item.videoId, src.uri, src.headers));
+      }
+    }
+
+    _wantInput = item != null && hub.isPlaying && _env != null;
     if (_wantInput) {
       _pollTimer ??= Timer.periodic(_pollEvery, (_) => _poll());
     } else {
       _pollTimer?.cancel();
       _pollTimer = null;
-      _misses = 0;
     }
-    if (_tickTimer == null && (_wantInput || _env > 0.004)) {
+    if (_tickTimer == null && (_wantInput || _env01 > 0.004)) {
       _lastMs = _clock.elapsedMilliseconds;
       _tickTimer = Timer.periodic(_tickEvery, (_) => _tick());
     }
   }
 
-  Future<void> _poll() async {
-    if (_polling || _disposed || !_wantInput) return;
-    if (_fallback) {
-      _push(_synthetic());
-      return;
-    }
-    final native = hub.player.platform;
-    if (native is! NativePlayer) {
-      _fallback = true;
-      return;
-    }
-    _polling = true;
+  Future<void> _analyze(
+    String id,
+    String source,
+    Map<String, String>? headers,
+  ) async {
+    _analyzingId = id;
+    File? temp;
     try {
-      final raw = (await native.getProperty(_metaKey)).trim();
-      final db = _parse(raw);
-      if (db == null) {
-        if (++_misses >= _missesBeforeFallback) {
-          _fallback = true;
-          debugPrint(
-            '[PalmTunes] No loudness data from the player, using the synthetic visualizer.',
+      var path = source;
+      if (source.startsWith('http')) {
+        final dir = await getTemporaryDirectory();
+        temp = File(p.join(dir.path, 'bass_$id.bin'));
+        final sink = temp.openWrite();
+        try {
+          await sink.addStream(
+            YtStreams.instance.openRanged(source, 0, headers ?? const {}),
           );
+        } finally {
+          await sink.close();
         }
-      } else {
-        _misses = 0;
-        _push(db);
+        path = temp.path;
       }
-    } catch (_) {
-      if (++_misses >= _missesBeforeFallback) _fallback = true;
+      final raw = await _channel.invokeMethod<Object>('envelope', {
+        'path': path,
+        'windowMs': _windowMs,
+      });
+      final env = raw is Float64List
+          ? raw
+          : (raw is List
+                ? Float64List.fromList(raw.cast<num>().map((e) => e.toDouble()).toList())
+                : null);
+      if (env == null || env.isEmpty) {
+        debugPrint('[PalmTunes] Bass analysis for $id returned nothing');
+        return;
+      }
+      _cache[id] = env;
+      _cacheOrder
+        ..remove(id)
+        ..add(id);
+      while (_cacheOrder.length > _cacheSongs) {
+        _cache.remove(_cacheOrder.removeAt(0));
+      }
+      debugPrint('[PalmTunes] Bass analysis ready for $id (${env.length} frames)');
+      if (!_disposed && _forId == id) {
+        _env = env;
+        _sync();
+      }
+    } catch (e) {
+      debugPrint('[PalmTunes] Bass analysis failed for $id -> $e');
     } finally {
-      _polling = false;
+      try {
+        await temp?.delete();
+      } catch (_) {}
+      if (_analyzingId == id && _env == null) {
+        // Leave _analyzingId set so a failing song is not retried in a loop.
+      }
     }
   }
 
-  static double? _parse(String raw) {
-    if (raw.isEmpty) return null;
-    final lower = raw.toLowerCase();
-    if (lower.contains('inf')) return -90;
-    return double.tryParse(raw);
-  }
-
-  /// A beat pattern that follows the play state. Each song gets its own tempo
-  /// (from its id) so different songs do not pulse identically.
-  double _synthetic() {
-    final id = hub.current?.videoId ?? '';
-    final bpm = 92 + (id.hashCode.abs() % 44);
-    final t = _clock.elapsedMilliseconds / 1000.0;
-    final phase = (t * bpm / 60.0) % 1.0;
-    final kick = exp(-phase * 5.5);
-    final off = exp(-((phase + 0.5) % 1.0) * 9.0) * 0.45;
-    final wobble = 0.5 + 0.5 * sin(t * 1.7 + id.hashCode % 7);
-    return -36 + 22 * max(kick, off) + 3 * wobble + Random().nextDouble() * 2;
+  void _poll() {
+    final env = _env;
+    if (env == null || !_wantInput) return;
+    final ms = hub.player.state.position.inMilliseconds + _lookAheadMs;
+    final i = (ms / _windowMs).floor();
+    if (i < 0 || i >= env.length) return;
+    _push(env[i]);
   }
 
   void _push(double db) {
@@ -149,18 +181,18 @@ class BassMeter {
     _lastMs = now;
     _peak = max(_minPeakDb, _peak - _peakFallDbPerSec * dt);
 
-    final decayed = _env * exp(-dt / _releaseSeconds);
-    _env = max(_target, decayed);
+    final decayed = _env01 * exp(-dt / _releaseSeconds);
+    _env01 = max(_target, decayed);
     _target = 0;
 
-    if (!_wantInput && _env < 0.004) {
-      _env = 0;
+    if (!_wantInput && _env01 < 0.004) {
+      _env01 = 0;
       level.value = 0;
       _tickTimer?.cancel();
       _tickTimer = null;
       return;
     }
-    if ((level.value - _env).abs() > 0.003) level.value = _env;
+    if ((level.value - _env01).abs() > 0.003) level.value = _env01;
   }
 
   void dispose() {

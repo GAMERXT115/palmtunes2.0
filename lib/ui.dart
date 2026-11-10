@@ -155,7 +155,7 @@ class _HardwareNotch extends StatelessWidget {
   static const double _islandW = 126;
   static const double _islandH = 37;
   static const double _islandTop = 11;
-  static const double _notchW = 170;
+  static const double _notchW = 240;
   static const double _bandH = 36;
 
   @override
@@ -167,7 +167,7 @@ class _HardwareNotch extends StatelessWidget {
     final collapsedH = island ? _islandH : inset - 4;
     final expandedW = island
         ? math.min(screenW - 24, 340.0)
-        : math.min(screenW - 110, 270.0);
+        : math.min(screenW - 56, 340.0);
     final expandedH = island ? _islandH + _bandH + 4 : inset + _bandH;
     final width = visible ? expandedW : collapsedW;
     final height = visible ? expandedH : collapsedH;
