@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:media_kit/media_kit.dart';
@@ -674,6 +675,7 @@ class PlayerHub extends ChangeNotifier {
     xf.timer = null;
     if (!identical(_xf, xf)) return;
     _xf = null;
+    final wasPlaying = _active.state.playing;
     final out = _spare;
     if (out != null) {
       unawaited(out.stop());
@@ -682,6 +684,25 @@ class PlayerHub extends ChangeNotifier {
     unawaited(_active.setVolume(100));
     crossfadeProgress.value = 1;
     notifyListeners();
+    if (Platform.isIOS) unawaited(_recoverAudio(wasPlaying));
+  }
+
+  /// On iPhone, stopping the song that faded out can release the phone's audio
+  /// session, which silences the new song right when the fade ends (it looked
+  /// like the song paused at the end of the crossfade). Take the session back
+  /// and restart the new song's sound output.
+  Future<void> _recoverAudio(bool wasPlaying) async {
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    try {
+      final session = await AudioSession.instance;
+      await session.setActive(true);
+    } catch (_) {}
+    if (!wasPlaying || _xf != null) return;
+    try {
+      final p = _active;
+      await p.pause();
+      await p.play();
+    } catch (_) {}
   }
 
   /// Anything that takes over playback (skip, previous, a new song, close)

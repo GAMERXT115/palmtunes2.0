@@ -30,14 +30,14 @@ const Map<String?, int> _stableFrames = {
   'fist': 2,
   'knob': 2,
   'point': 3,
-  'peace': 4,
-  'thumbs_up': 4,
+  'peace': 3,
+  'thumbs_up': 3,
   'other': 3,
   null: 4,
 };
 const double _actionCooldown = 1.2;
 const double _swipeWindow = 0.45;
-const double _swipeDistance = 0.18;
+const double _swipeDistance = 0.13;
 const double _swipeMaxSlope = 0.6;
 const double _swipeCooldown = 0.9;
 const double _pointGrace = 0.3;
@@ -578,11 +578,11 @@ class GestureEngine {
       _knobPending = null;
       return;
     }
-    // On the phone camera view a turn to the user's RIGHT makes the angle
-    // shrink (offset < 0). Turning right must raise the volume and turning
-    // left must lower it, so volume goes up when the offset is negative.
+    // The hands now arrive in true selfie view (like the desktop script), so
+    // turning the knob to the right (clockwise) raises the volume and turning
+    // it to the left lowers it.
     final clockwise = offset > 0;
-    final up = !clockwise;
+    final up = clockwise;
     final pending = _knobPending;
     if (pending == null || pending.$1 != up) {
       _knobPending = (up, now);

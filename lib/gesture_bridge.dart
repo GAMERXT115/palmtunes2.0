@@ -30,6 +30,7 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
   static const _kEnabled = 'pt_camera_gestures';
   static const _kLens = 'pt_camera_lens';
   static const _kFlip = 'pt_swipe_flip';
+  static const _kFlipHands = 'pt_flip_hands';
 
   final PlayerHub hub;
   SharedPreferences? _prefs;
@@ -37,6 +38,8 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
   bool _enabled = false;
   bool _previewWanted = false;
   bool _flipSwipe = false;
+  bool _flipHands = false;
+  double _aspect = 0.75;
   CameraLensDirection _lens = CameraLensDirection.front;
   GestureStatus _status = GestureStatus.off;
   String? _lastError;
@@ -67,6 +70,7 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
   bool get enabled => _enabled;
   bool get previewing => _previewWanted;
   bool get flipSwipe => _flipSwipe;
+  bool get flipHands => _flipHands;
   CameraLensDirection get lens => _lens;
   GestureStatus get status => _status;
   String? get lastError => _lastError;
@@ -77,6 +81,7 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
     _prefs = await SharedPreferences.getInstance();
     _enabled = _prefs!.getBool(_kEnabled) ?? false;
     _flipSwipe = _prefs!.getBool(_kFlip) ?? false;
+    _flipHands = _prefs!.getBool(_kFlipHands) ?? false;
     final lens = _prefs!.getString(_kLens);
     _lens = lens == 'back'
         ? CameraLensDirection.back
@@ -142,6 +147,12 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
       await _stop();
       await _start();
     }
+  }
+
+  void setFlipHands(bool v) {
+    _flipHands = v;
+    _prefs?.setBool(_kFlipHands, v);
+    notifyListeners();
   }
 
   void setFlipSwipe(bool v) {
@@ -213,6 +224,10 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       _description = desc;
+      final ps = controller.value.previewSize;
+      if (ps != null && ps.width > 0 && ps.height > 0) {
+        _aspect = math.min(ps.width, ps.height) / math.max(ps.width, ps.height);
+      }
       _tracker = tracker;
       _controller = controller;
       _handsSub = tracker.hands.listen(_onHands);
@@ -278,14 +293,25 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
 
   void _onHands(List<Hand> raw) {
     _lastResult = _clock.elapsedMilliseconds / 1000.0;
-    final mirror = _description?.lensDirection == CameraLensDirection.front;
-    final hands = mirror
+    final front = _description?.lensDirection == CameraLensDirection.front;
+    // iPhone frames of the front camera arrive already mirrored (selfie
+    // view), Android ones do not. The engine and the preview both want selfie
+    // view, so only Android needs flipping. The "Flip hands" setting inverts
+    // this in case a phone does it the other way round.
+    final mirror = (front && Platform.isAndroid) != _flipHands;
+    final shown = mirror
         ? [
             for (final h in raw) [for (final p in h) Pt(1 - p.x, p.y, p.z)],
           ]
         : raw;
-    handsNow.value = hands;
+    handsNow.value = shown;
     if (!_enabled) return;
+    // Distances in the engine assume equal units in x and y; the picture is
+    // not square, so scale x (and depth) to the same unit as y.
+    final a = _aspect;
+    final hands = [
+      for (final h in shown) [for (final p in h) Pt(p.x * a, p.y, p.z * a)],
+    ];
     final now = _lastResult;
     final change = _gate.update(hands);
     if (change == 'controls_off') {
@@ -296,7 +322,17 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
     if (_gate.enabled) {
       _engine.update(hands.length == 1 ? hands.first : null, now);
     }
-    hint.value = _gate.enabled ? _engine.label(now) : 'SLEEP  show 2 thumbs up';
+    if (!_gate.enabled) {
+      hint.value = 'SLEEP  show 2 thumbs up';
+    } else {
+      final label = _engine.label(now);
+      final pose = _engine.pose;
+      hint.value = label.isNotEmpty
+          ? label
+          : (pose == null || pose == 'other')
+          ? ''
+          : pose.replaceAll('_', ' ').toUpperCase();
+    }
   }
 
   void _onGesture(String name, Map<String, Object?> extra) {

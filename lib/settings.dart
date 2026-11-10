@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:math';
 import 'dart:ui';
 
@@ -36,6 +37,7 @@ class SettingsStore extends ChangeNotifier {
   static const _kHold = 'pt_hold_speed';
   static const _kAutoplay = 'pt_autoplay_next';
   static const _kPreferLocal = 'pt_prefer_downloaded';
+  static const _kPip = 'pt_pip';
   static const _kAutoMax = 'pt_auto_maximize';
   static const _kCrossfade = 'pt_crossfade';
   static const _kCrossfadeSecs = 'pt_crossfade_seconds';
@@ -54,6 +56,7 @@ class SettingsStore extends ChangeNotifier {
   double _holdSpeed = _defaultHold;
   bool _autoplayNext = true;
   bool _preferDownloaded = true;
+  bool _pip = true;
   int _autoMaximizeSeconds = _defaultAutoMax;
   bool _crossfade = _defaultCrossfade;
   int _crossfadeSeconds = _defaultCrossfadeSeconds;
@@ -65,6 +68,7 @@ class SettingsStore extends ChangeNotifier {
   double get holdSpeed => _holdSpeed;
   bool get autoplayNext => _autoplayNext;
   bool get preferDownloaded => _preferDownloaded;
+  bool get pipEnabled => _pip;
   int get autoMaximizeSeconds => _autoMaximizeSeconds;
   bool get crossfadeEnabled => _crossfade;
   int get crossfadeSeconds => _crossfadeSeconds;
@@ -79,6 +83,7 @@ class SettingsStore extends ChangeNotifier {
     _holdSpeed = p.getDouble(_kHold) ?? _defaultHold;
     _autoplayNext = p.getBool(_kAutoplay) ?? true;
     _preferDownloaded = p.getBool(_kPreferLocal) ?? true;
+    _pip = p.getBool(_kPip) ?? true;
     final autoMax = p.getInt(_kAutoMax) ?? _defaultAutoMax;
     _autoMaximizeSeconds = autoMaximizeOptions.contains(autoMax)
         ? autoMax
@@ -121,6 +126,12 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setPip(bool v) {
+    _pip = v;
+    _prefs?.setBool(_kPip, v);
+    notifyListeners();
+  }
+
   void setPreferDownloaded(bool v) {
     _preferDownloaded = v;
     _prefs?.setBool(_kPreferLocal, v);
@@ -153,6 +164,7 @@ class SettingsStore extends ChangeNotifier {
     _holdSpeed = _defaultHold;
     _autoplayNext = true;
     _preferDownloaded = true;
+    _pip = true;
     _autoMaximizeSeconds = _defaultAutoMax;
     _crossfade = _defaultCrossfade;
     _crossfadeSeconds = _defaultCrossfadeSeconds;
@@ -165,6 +177,7 @@ class SettingsStore extends ChangeNotifier {
         p.remove(_kHold),
         p.remove(_kAutoplay),
         p.remove(_kPreferLocal),
+        p.remove(_kPip),
         p.remove(_kAutoMax),
         p.remove(_kCrossfade),
         p.remove(_kCrossfadeSecs),
@@ -276,6 +289,12 @@ class SettingsScreen extends StatelessWidget {
               onChanged: g.setLens,
             ),
             _SwitchRow(
+              title: 'Flip hands',
+              subtitle: 'Turn on if the drawn hand moves the opposite way to yours',
+              value: g.flipHands,
+              onChanged: g.setFlipHands,
+            ),
+            _SwitchRow(
               title: 'Flip swipe direction',
               subtitle: 'Turn on if next and previous feel reversed',
               value: g.flipSwipe,
@@ -309,6 +328,14 @@ class SettingsScreen extends StatelessWidget {
                   for (final v in SettingsStore.crossfadeOptions) v: '${v}s',
                 },
                 onChanged: s.setCrossfadeSeconds,
+              ),
+            if (Platform.isIOS)
+              _SwitchRow(
+                title: 'Picture in Picture',
+                subtitle:
+                    'Keep the video in a small window when you leave the app. Loads the video a second time while the player is open',
+                value: s.pipEnabled,
+                onChanged: s.setPip,
               ),
             _SwitchRow(
               title: 'Prefer downloaded copy',

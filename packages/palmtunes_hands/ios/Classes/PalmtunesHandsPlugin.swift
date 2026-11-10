@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import CoreVideo
 import AVFoundation
+import AVKit
 import MediaPipeTasksVision
 
 /// Hand landmarks on iOS: the same MediaPipe model the Android side uses.
@@ -10,6 +11,7 @@ import MediaPipeTasksVision
 /// in the upright, un-mirrored image.
 public class PalmtunesHandsPlugin: NSObject, FlutterPlugin {
   private var modelPath: String?
+  private static var pipManager: PipManager?
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
@@ -17,6 +19,11 @@ public class PalmtunesHandsPlugin: NSObject, FlutterPlugin {
       binaryMessenger: registrar.messenger()
     )
     let instance = PalmtunesHandsPlugin()
+    let pipChannel = FlutterMethodChannel(
+      name: "palmtunes/pip",
+      binaryMessenger: registrar.messenger()
+    )
+    pipManager = PipManager(channel: pipChannel)
     let bassChannel = FlutterMethodChannel(
       name: "palmtunes/bass",
       binaryMessenger: registrar.messenger()
@@ -202,5 +209,165 @@ public class PalmtunesHandsPlugin: NSObject, FlutterPlugin {
     if out.isEmpty { return nil }
     let bytes = out.withUnsafeBufferPointer { Data(buffer: $0) }
     return FlutterStandardTypedData(float64: bytes)
+  }
+}
+
+
+/// Picture in Picture: a silent AVPlayer plays the same video behind the app
+/// so iOS can float it when the app is left. Sound still comes from Dart's
+/// player; play/pause and "back to app" in the PiP window are sent to Dart.
+final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
+  private let channel: FlutterMethodChannel
+  private var player: AVPlayer?
+  private var layer: AVPlayerLayer?
+  private var host: UIView?
+  private var pip: AVPictureInPictureController?
+  private var statusObs: NSKeyValueObservation?
+  private var active = false
+
+  init(channel: FlutterMethodChannel) {
+    self.channel = channel
+    super.init()
+    channel.setMethodCallHandler { [weak self] call, result in
+      self?.handle(call, result: result)
+    }
+  }
+
+  private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let args = call.arguments as? [String: Any] ?? [:]
+    switch call.method {
+    case "prepare":
+      DispatchQueue.main.async { self.prepare(args) }
+      result(nil)
+    case "sync":
+      DispatchQueue.main.async { self.sync(args) }
+      result(nil)
+    case "start":
+      DispatchQueue.main.async {
+        if let pip = self.pip, pip.isPictureInPicturePossible, !pip.isPictureInPictureActive {
+          pip.startPictureInPicture()
+        }
+      }
+      result(nil)
+    case "dispose":
+      DispatchQueue.main.async { self.teardown() }
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func keyWindow() -> UIWindow? {
+    return UIApplication.shared.connectedScenes
+      .compactMap { $0 as? UIWindowScene }
+      .flatMap { $0.windows }
+      .first { $0.isKeyWindow }
+  }
+
+  private func prepare(_ args: [String: Any]) {
+    teardown()
+    guard AVPictureInPictureController.isPictureInPictureSupported(),
+          let urlString = args["url"] as? String,
+          let url = URL(string: urlString),
+          let window = keyWindow() else { return }
+    let positionMs = args["positionMs"] as? Int ?? 0
+    let playing = args["playing"] as? Bool ?? false
+
+    var options: [String: Any] = [:]
+    if let headers = args["headers"] as? [String: String], !headers.isEmpty {
+      options["AVURLAssetHTTPHeaderFieldsKey"] = headers
+    }
+    let asset = AVURLAsset(url: url, options: options)
+    let item = AVPlayerItem(asset: asset)
+    let p = AVPlayer(playerItem: item)
+    p.isMuted = true
+    p.allowsExternalPlayback = false
+    p.seek(
+      to: CMTime(value: Int64(positionMs), timescale: 1000),
+      toleranceBefore: .zero,
+      toleranceAfter: .zero
+    )
+    if playing { p.play() }
+
+    let l = AVPlayerLayer(player: p)
+    l.videoGravity = .resizeAspect
+    let h = UIView(frame: window.bounds)
+    h.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    h.isUserInteractionEnabled = false
+    h.backgroundColor = .black
+    l.frame = h.bounds
+    h.layer.addSublayer(l)
+    // Behind the Flutter view, but still part of the window.
+    window.insertSubview(h, at: 0)
+
+    let c = AVPictureInPictureController(playerLayer: l)
+    c?.delegate = self
+    if #available(iOS 14.2, *) {
+      c?.canStartPictureInPictureAutomaticallyFromInline = true
+    }
+
+    statusObs = p.observe(\.timeControlStatus, options: [.new]) { [weak self] pl, _ in
+      guard let self = self, self.active else { return }
+      self.channel.invokeMethod(
+        "pipPlaying",
+        arguments: ["playing": pl.timeControlStatus != .paused]
+      )
+    }
+
+    player = p
+    layer = l
+    host = h
+    pip = c
+  }
+
+  private func sync(_ args: [String: Any]) {
+    guard let p = player else { return }
+    let positionMs = args["positionMs"] as? Int ?? 0
+    let playing = args["playing"] as? Bool ?? false
+    let currentMs = p.currentTime().seconds * 1000
+    if abs(currentMs - Double(positionMs)) > 1200 {
+      p.seek(
+        to: CMTime(value: Int64(positionMs), timescale: 1000),
+        toleranceBefore: .zero,
+        toleranceAfter: .zero
+      )
+    }
+    if playing && p.timeControlStatus == .paused {
+      p.play()
+    } else if !playing && p.timeControlStatus != .paused {
+      p.pause()
+    }
+    layer?.frame = host?.bounds ?? .zero
+  }
+
+  private func teardown() {
+    if let c = pip, c.isPictureInPictureActive { c.stopPictureInPicture() }
+    statusObs = nil
+    player?.pause()
+    layer?.removeFromSuperlayer()
+    host?.removeFromSuperview()
+    player = nil
+    layer = nil
+    host = nil
+    pip = nil
+    active = false
+  }
+
+  func pictureInPictureControllerDidStartPictureInPicture(_ c: AVPictureInPictureController) {
+    active = true
+  }
+
+  func pictureInPictureControllerDidStopPictureInPicture(_ c: AVPictureInPictureController) {
+    active = false
+    let ms = Int((player?.currentTime().seconds ?? 0) * 1000)
+    let playing = (player?.timeControlStatus ?? .paused) != .paused
+    channel.invokeMethod("pipStopped", arguments: ["positionMs": ms, "playing": playing])
+  }
+
+  func pictureInPictureController(
+    _ c: AVPictureInPictureController,
+    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler handler: @escaping (Bool) -> Void
+  ) {
+    handler(true)
   }
 }
