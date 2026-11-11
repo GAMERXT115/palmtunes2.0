@@ -1149,24 +1149,28 @@ class _SeekBarState extends State<_SeekBar> {
   static const double _cancelSize = 46;
   static const double _cancelOffset = 72;
   static const double _cancelHitRadius = 40;
-  static const double _bigFraction = 0.94;
+  static const double _bigFraction = 0.9;
   static const double _bigMaxHeightFraction = 0.6;
   static const double _screenMargin = 10;
-  static const double _zoomStart = 22;
-  static const double _zoomRange = 190;
-  static const double _commitZoom = 0.35;
   static const double _moveSlop = 8;
-  static const Duration _followAnim = Duration(milliseconds: 60);
-  static const Duration _commitAnim = Duration(milliseconds: 320);
-  static const Duration _fadeAnim = Duration(milliseconds: 160);
+  // Fine scrubbing while the picture is enlarged: sideways movement moves the
+  // time by only a fraction of what it does on the bar. The higher the finger
+  // is above the bar, the finer (slower) it gets.
+  static const double _fineMax = 0.25;
+  static const double _fineMin = 0.04;
+  static const double _fineRange = 250;
+  static const Duration _scrubAnim = Duration(milliseconds: 70);
+  static const Duration _zoomAnim = Duration(milliseconds: 240);
+  static const Duration _commitAnim = Duration(milliseconds: 520);
+  static const Duration _fadeAnim = Duration(milliseconds: 200);
 
   final _trackKey = GlobalKey();
   final _portal = OverlayPortalController();
 
   double? _dragMs;
   double _lastDx = 0;
-  double _startLocalDy = 0;
-  double _zoom = 0;
+  bool _enlarged = false;
+  DateTime _zoomUntil = DateTime.fromMillisecondsSinceEpoch(0);
   bool _overCancel = false;
   bool _down = false;
   bool _started = false;
@@ -1177,6 +1181,7 @@ class _SeekBarState extends State<_SeekBar> {
   double _lastMaxMs = 0;
   double _lastW = 0;
   double? _burstFrac;
+  double _burstDy = _trackArea / 2 + _cancelOffset;
   int _burstId = 0;
   double _cancelDy = _trackArea / 2 + _cancelOffset;
 
@@ -1294,6 +1299,12 @@ class _SeekBarState extends State<_SeekBar> {
     );
   }
 
+  void _setEnlarged(bool v) {
+    if (_enlarged == v) return;
+    _enlarged = v;
+    _zoomUntil = DateTime.now().add(_zoomAnim);
+  }
+
   void _resetCommit() {
     _commitTimer?.cancel();
     _commitTimer = null;
@@ -1308,13 +1319,12 @@ class _SeekBarState extends State<_SeekBar> {
     _lastMaxMs = maxMs;
     _lastW = w;
     _lastDx = local.dx;
-    _startLocalDy = local.dy;
     widget.onDragStart?.call();
     final ms = _msAt(local.dx, w, maxMs);
     setState(() {
       _dragMs = ms;
       _overCancel = false;
-      _zoom = 0;
+      _enlarged = false;
     });
     _portal.show();
     _pendingSeekMs = ms.round();
@@ -1332,24 +1342,40 @@ class _SeekBarState extends State<_SeekBar> {
     final center = Offset(x, _cancelDy);
     if ((local - center).distance <= _cancelHitRadius) {
       setState(() {
-        _zoom = 0;
+        _setEnlarged(false);
         _overCancel = true;
       });
       return;
     }
-    final up = _startLocalDy - local.dy;
-    final zoom = ((up - _zoomStart) / _zoomRange).clamp(0.0, 1.0).toDouble();
-    double ms;
-    if (zoom > 0.04) {
-      // Fine scrubbing: the higher the finger, the slower the time moves.
-      final factor = 1 - 0.8 * zoom;
-      ms = (current + dx / w * maxMs * factor).clamp(0.0, maxMs).toDouble();
-    } else {
-      ms = _msAt(local.dx, w, maxMs);
+    final origin = _trackOrigin;
+    if (origin != null && _screen != null) {
+      final global = origin + local;
+      // Entering: the finger has to reach the small picture above the thumb.
+      // Staying: the big picture is centred on the screen, so once it is
+      // enlarged it stays enlarged while the finger is anywhere above the bar
+      // (or inside the big picture) and only shrinks when it comes back down.
+      final keep =
+          _enlarged && (local.dy < -_previewGap || _bigRect().contains(global));
+      if (keep || (!_enlarged && _smallRect(current).contains(global))) {
+        var ms = current;
+        if (_enlarged) {
+          final up = (-local.dy - _previewGap).clamp(0.0, _fineRange);
+          final factor = _fineMax - (_fineMax - _fineMin) * (up / _fineRange);
+          ms = (current + dx / w * maxMs * factor).clamp(0.0, maxMs);
+          _queuePreviewSeek(ms.round());
+        }
+        setState(() {
+          _overCancel = false;
+          _setEnlarged(true);
+          _dragMs = ms;
+        });
+        return;
+      }
     }
+    final ms = _msAt(local.dx, w, maxMs);
     setState(() {
       _overCancel = false;
-      _zoom = zoom;
+      _setEnlarged(false);
       _dragMs = ms;
     });
     _queuePreviewSeek(ms.round());
@@ -1359,7 +1385,7 @@ class _SeekBarState extends State<_SeekBar> {
     final ms = _dragMs;
     if (ms == null) return;
     final cancel = _overCancel;
-    final commit = _zoom >= _commitZoom && !cancel;
+    final commit = _enlarged && !cancel;
     _seekTimer?.cancel();
     _pendingSeekMs = null;
     if (commit) {
@@ -1371,9 +1397,11 @@ class _SeekBarState extends State<_SeekBar> {
     setState(() {
       _dragMs = null;
       _overCancel = false;
-      _zoom = 0;
+      _enlarged = false;
       if (cancel && _lastMaxMs > 0) {
+        // The bubble bursts where the X is, not on the bar.
         _burstFrac = (ms / _lastMaxMs).clamp(0.0, 1.0);
+        _burstDy = _cancelDy;
         _burstId++;
       }
     });
@@ -1383,6 +1411,9 @@ class _SeekBarState extends State<_SeekBar> {
     widget.onDragEnd?.call();
   }
 
+  /// Let go on the enlarged picture: it zooms up to the whole screen,
+  /// covering the old video, and then fades away to reveal the main video,
+  /// which carries on playing from that spot.
   void _commit(double ms) {
     final hub = widget.hub;
     hub.player.seek(Duration(milliseconds: ms.round()));
@@ -1395,7 +1426,7 @@ class _SeekBarState extends State<_SeekBar> {
       _commitPhase = 1;
     });
     _commitTimer?.cancel();
-    _commitTimer = Timer(_commitAnim, () {
+    _commitTimer = Timer(_commitAnim + const Duration(milliseconds: 120), () {
       if (!mounted || _commitPhase != 1) return;
       setState(() => _commitPhase = 2);
       _commitTimer = Timer(_fadeAnim, () {
@@ -1405,7 +1436,7 @@ class _SeekBarState extends State<_SeekBar> {
         setState(() {
           _commitPhase = 0;
           _commitMs = null;
-          _zoom = 0;
+          _enlarged = false;
         });
       });
     });
@@ -1489,14 +1520,20 @@ class _SeekBarState extends State<_SeekBar> {
     final Rect rect;
     if (committing) {
       rect = Offset.zero & overlayBox.size;
+    } else if (_enlarged) {
+      rect = _bigRect();
     } else {
-      rect = Rect.lerp(
-        _smallRect(ms),
-        _bigRect(),
-        Curves.easeOutCubic.transform(_zoom),
-      )!;
+      rect = _smallRect(ms);
     }
-    final duration = committing ? _commitAnim : _followAnim;
+    final zooming = DateTime.now().isBefore(_zoomUntil);
+    final Duration duration;
+    if (committing) {
+      duration = _commitAnim;
+    } else if (_enlarged || zooming) {
+      duration = _zoomAnim;
+    } else {
+      duration = _scrubAnim;
+    }
     final frac = (ms / _lastMaxMs).clamp(0.0, 1.0);
     final gx = origin.dx + frac * _trackWidth;
 
@@ -1504,15 +1541,9 @@ class _SeekBarState extends State<_SeekBar> {
       child: IgnorePointer(
         child: Stack(
           children: [
-            if (!committing)
-              Positioned.fill(
-                child: ColoredBox(
-                  color: Colors.black.withValues(alpha: 0.6 * _zoom),
-                ),
-              ),
             AnimatedPositioned(
               duration: duration,
-              curve: committing ? Curves.easeInOutCubic : Curves.easeOut,
+              curve: committing ? Curves.easeInOutCubic : Curves.easeOutCubic,
               left: rect.left,
               top: rect.top,
               width: rect.width,
@@ -1537,9 +1568,8 @@ class _SeekBarState extends State<_SeekBar> {
 
   Widget _buildPreview(Color accent, double ms, bool committing) {
     final showVideo = _hasVideo && _previewCtrl != null;
-    final radius = committing ? 0.0 : 10.0 + 8.0 * _zoom;
+    final radius = committing ? 0.0 : (_enlarged ? 18.0 : 10.0);
     final time = formatDuration(Duration(milliseconds: ms.round()));
-    final enlarged = _zoom >= _commitZoom;
     final box = Container(
       decoration: BoxDecoration(
         color: Colors.black,
@@ -1549,19 +1579,19 @@ class _SeekBarState extends State<_SeekBar> {
             : Border.all(
                 color: _overCancel
                     ? Colors.white24
-                    : accent.withValues(alpha: 0.75 + 0.2 * _zoom),
-                width: 1.5 + _zoom,
+                    : accent.withValues(alpha: _enlarged ? 0.9 : 0.75),
+                width: _enlarged ? 2 : 1.5,
               ),
         boxShadow: committing
             ? null
             : [
                 BoxShadow(
                   color: Colors.black.withValues(alpha: 0.6),
-                  blurRadius: 16 + 32 * _zoom,
+                  blurRadius: _enlarged ? 48 : 16,
                 ),
-                if (_zoom > 0.2)
+                if (_enlarged)
                   BoxShadow(
-                    color: accent.withValues(alpha: 0.3 * _zoom),
+                    color: accent.withValues(alpha: 0.3),
                     blurRadius: 36,
                   ),
               ],
@@ -1571,7 +1601,7 @@ class _SeekBarState extends State<_SeekBar> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            ThumbImage(source: widget.item.thumbnailUrl),
+            if (!showVideo) ThumbImage(source: widget.item.thumbnailUrl),
             if (showVideo)
               Video(
                 controller: _previewCtrl!,
@@ -1612,13 +1642,13 @@ class _SeekBarState extends State<_SeekBar> {
               duration: const Duration(milliseconds: 160),
               padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
               decoration: BoxDecoration(
-                color: enlarged
+                color: _enlarged
                     ? accent.withValues(alpha: 0.85)
                     : Colors.black.withValues(alpha: 0.75),
                 borderRadius: BorderRadius.circular(7),
               ),
               child: Text(
-                enlarged ? 'Release to play from $time' : time,
+                _enlarged ? 'Release to jump to $time' : time,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 11.5,
@@ -1636,7 +1666,7 @@ class _SeekBarState extends State<_SeekBar> {
     final danger = Colors.redAccent.shade200;
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 140),
-      opacity: _zoom > 0.4 ? 0.3 : 1,
+      opacity: _enlarged ? 0.3 : 1,
       child: AnimatedScale(
         duration: const Duration(milliseconds: 120),
         scale: _overCancel ? 1.18 : 1,
@@ -1781,7 +1811,7 @@ class _SeekBarState extends State<_SeekBar> {
                                 Positioned(
                                   left:
                                       _burstFrac! * w - _BubbleBurst.extent / 2,
-                                  top: _trackArea / 2 - _BubbleBurst.extent / 2,
+                                  top: _burstDy - _BubbleBurst.extent / 2,
                                   child: IgnorePointer(
                                     child: _BubbleBurst(
                                       key: ValueKey(burstId),
