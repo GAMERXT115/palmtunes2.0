@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import 'player_hub.dart';
 import 'settings.dart';
+import 'ui.dart';
 
 /// Native iPhone Picture in Picture for the video.
 ///
@@ -27,6 +29,7 @@ class PipController with WidgetsBindingObserver {
   PipController(this.hub, this.settings);
 
   bool _on = false;
+  bool _announcedReady = false;
   String? _preparedFor;
   Timer? _sync;
 
@@ -75,6 +78,7 @@ class PipController with WidgetsBindingObserver {
     if (media == null || !hasVideo || hub.isLoading) return;
     if (_preparedFor == media.uri) return;
     _preparedFor = media.uri;
+    _announcedReady = false;
     unawaited(
       _invoke('prepare', {
         'url': media.uri,
@@ -97,16 +101,29 @@ class PipController with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // The native side starts Picture in Picture itself, at the exact moment the
+    // scene deactivates (it has to be then). Here we only send the latest
+    // position so the small window starts in the right place.
     if (!_on || _preparedFor == null) return;
-    if (state == AppLifecycleState.inactive && hub.isPlaying) {
-      _push();
-      unawaited(_invoke('start'));
-    }
+    if (state == AppLifecycleState.inactive) _push();
   }
 
   Future<Object?> _onCall(MethodCall call) async {
     final args = (call.arguments as Map?)?.cast<String, Object?>() ?? {};
     switch (call.method) {
+      case 'pipStatus':
+        final state = args['state'] as String? ?? '';
+        final message = args['message'] as String? ?? '';
+        debugPrint('[PalmTunes] PiP $state: $message');
+        if (state == 'error') {
+          Notch.show('PiP: $message', icon: Icons.picture_in_picture_alt_rounded);
+        } else if (state == 'ready' && !_announcedReady) {
+          _announcedReady = true;
+          Notch.show(
+            'Picture in Picture ready',
+            icon: Icons.picture_in_picture_alt_rounded,
+          );
+        }
       case 'pipPlaying':
         final playing = args['playing'] == true;
         if (playing && !hub.isPlaying) {

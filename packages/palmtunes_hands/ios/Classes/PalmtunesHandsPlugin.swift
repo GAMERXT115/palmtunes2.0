@@ -216,6 +216,15 @@ public class PalmtunesHandsPlugin: NSObject, FlutterPlugin {
 /// Picture in Picture: a silent AVPlayer plays the same video behind the app
 /// so iOS can float it when the app is left. Sound still comes from Dart's
 /// player; play/pause and "back to app" in the PiP window are sent to Dart.
+///
+/// Apple's rules this follows:
+///  * audio session category .playback and the "audio" background mode
+///  * an AVPictureInPictureController made from an AVPlayerLayer that is in a
+///    window, with isPictureInPicturePossible true (the item has to be ready)
+///  * in a UIScene app, PiP has to be started while the scene is still active,
+///    so it is started from UIScene.willDeactivateNotification
+/// Every step reports its state to Dart ("pipStatus") so a failure shows up
+/// on screen with the real reason.
 final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
   private let channel: FlutterMethodChannel
   private var player: AVPlayer?
@@ -223,13 +232,35 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
   private var host: UIView?
   private var pip: AVPictureInPictureController?
   private var statusObs: NSKeyValueObservation?
+  private var possibleObs: NSKeyValueObservation?
+  private var itemObs: NSKeyValueObservation?
+  private var layerObs: NSKeyValueObservation?
   private var active = false
+  private var wantPlaying = false
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
     super.init()
     channel.setMethodCallHandler { [weak self] call, result in
       self?.handle(call, result: result)
+    }
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(leavingForeground),
+      name: UIScene.willDeactivateNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(leavingForeground),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
+  }
+
+  private func report(_ state: String, _ message: String) {
+    DispatchQueue.main.async {
+      self.channel.invokeMethod("pipStatus", arguments: ["state": state, "message": message])
     }
   }
 
@@ -241,13 +272,6 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
       result(nil)
     case "sync":
       DispatchQueue.main.async { self.sync(args) }
-      result(nil)
-    case "start":
-      DispatchQueue.main.async {
-        if let pip = self.pip, pip.isPictureInPicturePossible, !pip.isPictureInPictureActive {
-          pip.startPictureInPicture()
-        }
-      }
       result(nil)
     case "dispose":
       DispatchQueue.main.async { self.teardown() }
@@ -264,14 +288,46 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
       .first { $0.isKeyWindow }
   }
 
+  /// The app is about to leave the foreground: start PiP right now.
+  @objc private func leavingForeground() {
+    guard let c = pip, !c.isPictureInPictureActive else { return }
+    guard wantPlaying else { return }
+    if c.isPictureInPicturePossible {
+      c.startPictureInPicture()
+    } else {
+      let status = player?.currentItem?.status.rawValue ?? -1
+      report(
+        "error",
+        "not possible yet (video status \(status), layer ready: \(layer?.isReadyForDisplay ?? false))"
+      )
+    }
+  }
+
   private func prepare(_ args: [String: Any]) {
     teardown()
-    guard AVPictureInPictureController.isPictureInPictureSupported(),
-          let urlString = args["url"] as? String,
-          let url = URL(string: urlString),
-          let window = keyWindow() else { return }
+    guard AVPictureInPictureController.isPictureInPictureSupported() else {
+      report("error", "this device does not support it")
+      return
+    }
+    guard let urlString = args["url"] as? String, let url = URL(string: urlString) else {
+      report("error", "no valid video address")
+      return
+    }
+    guard let window = keyWindow() else {
+      report("error", "no window found")
+      return
+    }
     let positionMs = args["positionMs"] as? Int ?? 0
     let playing = args["playing"] as? Bool ?? false
+    wantPlaying = playing
+
+    // Category .playback is required (the "audio" background mode is in Info.plist).
+    do {
+      try AVAudioSession.sharedInstance().setCategory(.playback)
+      try AVAudioSession.sharedInstance().setActive(true)
+    } catch {
+      report("error", "audio session: \(error.localizedDescription)")
+    }
 
     var options: [String: Any] = [:]
     if let headers = args["headers"] as? [String: String], !headers.isEmpty {
@@ -306,6 +362,23 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
       c?.canStartPictureInPictureAutomaticallyFromInline = true
     }
 
+    itemObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
+      switch it.status {
+      case .failed:
+        let why = it.error?.localizedDescription ?? "the video could not be loaded"
+        self?.report("error", "video failed: \(why)")
+      case .readyToPlay:
+        self?.report("loaded", "video loaded")
+      default:
+        break
+      }
+    }
+    layerObs = l.observe(\.isReadyForDisplay, options: [.new]) { [weak self] lay, _ in
+      self?.report("layer", lay.isReadyForDisplay ? "layer ready" : "layer not ready")
+    }
+    possibleObs = c?.observe(\.isPictureInPicturePossible, options: [.new]) { [weak self] ctl, _ in
+      self?.report(ctl.isPictureInPicturePossible ? "ready" : "notready", "possible: \(ctl.isPictureInPicturePossible)")
+    }
     statusObs = p.observe(\.timeControlStatus, options: [.new]) { [weak self] pl, _ in
       guard let self = self, self.active else { return }
       self.channel.invokeMethod(
@@ -318,12 +391,14 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
     layer = l
     host = h
     pip = c
+    if c == nil { report("error", "could not create the Picture in Picture controller") }
   }
 
   private func sync(_ args: [String: Any]) {
     guard let p = player else { return }
     let positionMs = args["positionMs"] as? Int ?? 0
     let playing = args["playing"] as? Bool ?? false
+    wantPlaying = playing
     let currentMs = p.currentTime().seconds * 1000
     if abs(currentMs - Double(positionMs)) > 1200 {
       p.seek(
@@ -343,6 +418,9 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
   private func teardown() {
     if let c = pip, c.isPictureInPictureActive { c.stopPictureInPicture() }
     statusObs = nil
+    possibleObs = nil
+    itemObs = nil
+    layerObs = nil
     player?.pause()
     layer?.removeFromSuperlayer()
     host?.removeFromSuperview()
@@ -355,6 +433,14 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
 
   func pictureInPictureControllerDidStartPictureInPicture(_ c: AVPictureInPictureController) {
     active = true
+    report("started", "Picture in Picture started")
+  }
+
+  func pictureInPictureController(
+    _ c: AVPictureInPictureController,
+    failedToStartPictureInPictureWithError error: Error
+  ) {
+    report("error", "could not start: \(error.localizedDescription)")
   }
 
   func pictureInPictureControllerDidStopPictureInPicture(_ c: AVPictureInPictureController) {

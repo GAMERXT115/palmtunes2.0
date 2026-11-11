@@ -139,6 +139,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _scheduleHide();
   }
 
+  void _hideControls() {
+    _hideTimer?.cancel();
+    if (_controlsVisible) setState(() => _controlsVisible = false);
+  }
+
   void _scheduleHide() {
     _hideTimer?.cancel();
     _hideTimer = Timer(_hideDelay, () {
@@ -551,7 +556,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                             setState(() => _controlsVisible = true);
                           }
                         },
-                        onDragEnd: _scheduleHide,
+                        onDragEnd: (committed) {
+                          // After the picture zoomed into the video the
+                          // controls stay hidden until the screen is tapped.
+                          if (committed) {
+                            _hideControls();
+                          } else {
+                            _scheduleHide();
+                          }
+                        },
                       ),
                       Padding(
                         padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
@@ -1126,7 +1139,9 @@ class _SeekBar extends StatefulWidget {
   final PlayItem item;
   final double horizontalPadding;
   final VoidCallback? onDragStart;
-  final VoidCallback? onDragEnd;
+  /// [committed] is true when the finger was let go on the enlarged picture
+  /// (it zoomed into the video).
+  final void Function(bool committed)? onDragEnd;
 
   const _SeekBar({
     required this.hub,
@@ -1281,22 +1296,22 @@ class _SeekBarState extends State<_SeekBar> {
     return Rect.fromLTWH(left, top, _previewW, _previewH + _labelH);
   }
 
+  /// The enlarged picture. Its bottom edge stays above the seek bar so it
+  /// never covers it; if there is not enough room it gets smaller instead.
   Rect _bigRect() {
     final screen = _screen!;
+    final origin = _trackOrigin!;
+    final bottom = origin.dy - _previewGap - 6;
+    final maxTotal = bottom - _screenMargin;
     var w = screen.width * _bigFraction;
     var h = w * 9 / 16;
-    final maxH = screen.height * _bigMaxHeightFraction;
-    if (h > maxH) {
-      h = maxH;
+    var total = h + _labelH;
+    if (total > maxTotal) {
+      h = math.max(80.0, maxTotal - _labelH);
       w = h * 16 / 9;
+      total = h + _labelH;
     }
-    final total = h + _labelH;
-    return Rect.fromLTWH(
-      (screen.width - w) / 2,
-      (screen.height - total) / 2,
-      w,
-      total,
-    );
+    return Rect.fromLTWH((screen.width - w) / 2, bottom - total, w, total);
   }
 
   void _setEnlarged(bool v) {
@@ -1390,7 +1405,7 @@ class _SeekBarState extends State<_SeekBar> {
     _pendingSeekMs = null;
     if (commit) {
       _commit(ms);
-      widget.onDragEnd?.call();
+      widget.onDragEnd?.call(true);
       return;
     }
     _portal.hide();
@@ -1408,7 +1423,7 @@ class _SeekBarState extends State<_SeekBar> {
     if (!cancel) {
       widget.hub.player.seek(Duration(milliseconds: ms.round()));
     }
-    widget.onDragEnd?.call();
+    widget.onDragEnd?.call(false);
   }
 
   /// Let go on the enlarged picture: it zooms up to the whole screen,
