@@ -309,9 +309,24 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
       report("error", "this device does not support it")
       return
     }
-    guard let urlString = args["url"] as? String, let url = URL(string: urlString) else {
-      report("error", "no valid video address")
+    guard let urlString = args["url"] as? String, !urlString.isEmpty else {
+      report("error", "no video address")
       return
+    }
+    // Streams arrive as http(s) addresses, but a video saved on the phone is a
+    // plain file path with no scheme, which AVPlayer rejects as "unsupported
+    // URL". Treat anything that is not a web or file:// address as a path.
+    let url: URL
+    if urlString.hasPrefix("http://") || urlString.hasPrefix("https://")
+      || urlString.hasPrefix("file://")
+    {
+      guard let u = URL(string: urlString) else {
+        report("error", "invalid video address")
+        return
+      }
+      url = u
+    } else {
+      url = URL(fileURLWithPath: urlString)
     }
     guard let window = keyWindow() else {
       report("error", "no window found")
@@ -333,6 +348,7 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
     if let headers = args["headers"] as? [String: String], !headers.isEmpty {
       options["AVURLAssetHTTPHeaderFieldsKey"] = headers
     }
+    let scheme = url.scheme ?? "none"
     let asset = AVURLAsset(url: url, options: options)
     let item = AVPlayerItem(asset: asset)
     let p = AVPlayer(playerItem: item)
@@ -366,7 +382,7 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
       switch it.status {
       case .failed:
         let why = it.error?.localizedDescription ?? "the video could not be loaded"
-        self?.report("error", "video failed: \(why)")
+        self?.report("error", "video failed: \(why) [\(scheme)]")
       case .readyToPlay:
         self?.report("loaded", "video loaded")
       default:
