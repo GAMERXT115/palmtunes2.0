@@ -582,7 +582,7 @@ packages:
       path: "packages/palmtunes_hands"
       relative: true
     source: path
-    version: "1.0.0"
+    version: "1.1.0"
   path:
     dependency: "direct main"
     description:
