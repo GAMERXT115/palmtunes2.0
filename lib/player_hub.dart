@@ -279,6 +279,21 @@ class PlayerHub extends ChangeNotifier {
   }) =>
       _start(list.map(PlayItem.fromDownload).toList(), index, openFull, false);
 
+  /// Plays a whole list in shuffle mode, starting on a random song.
+  Future<void> playDownloadedShuffled(
+    List<DownloadedVideo> list, {
+    bool openFull = true,
+  }) async {
+    if (list.isEmpty) return;
+    _shuffle = true;
+    await _start(
+      list.map(PlayItem.fromDownload).toList(),
+      _random.nextInt(list.length),
+      openFull,
+      false,
+    );
+  }
+
   Future<void> _start(
     List<PlayItem> items,
     int index,

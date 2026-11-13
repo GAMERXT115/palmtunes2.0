@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,16 +11,22 @@ import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'audio_handler.dart';
+import 'auth_store.dart';
 import 'bass_meter.dart';
+import 'cloud_sync.dart';
 import 'downloads.dart';
+import 'firebase_options.dart';
 import 'gesture_bridge.dart';
 import 'list.dart';
+import 'login_screen.dart';
 import 'mini_bar.dart';
 import 'player_hub.dart';
 import 'search.dart';
 import 'settings.dart';
+import 'splash_screen.dart';
 import 'ui.dart';
 import 'yt_streams.dart';
 
@@ -40,6 +47,37 @@ Future<void> main() async {
     ),
   );
 
+  // The saved accent colour is read on its own (it is quick) so the splash
+  // already matches the user's theme while everything else loads.
+  var accent = const Color(0xFFE11D48);
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getInt('pt_accent');
+    if (saved != null) accent = Color(saved);
+  } catch (_) {}
+
+  runApp(
+    ColoredBox(
+      color: AppColors.background,
+      child: SplashLauncher(accent: accent, boot: _boot),
+    ),
+  );
+}
+
+/// Everything that has to load before the app can show. It runs behind the
+/// splash screen and returns the app to fade into.
+Future<Widget> _boot() async {
+  // Firebase starts first: it is only local setup, no internet is needed.
+  var firebaseOk = true;
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    firebaseOk = false;
+    debugPrint('[PalmTunes] Firebase could not start -> $e');
+  }
+
   // Music category: keeps playing in the background and ducks for calls.
   final session = await AudioSession.instance;
   await session.configure(const AudioSessionConfiguration.music());
@@ -47,7 +85,20 @@ Future<void> main() async {
   final settings = SettingsStore();
   final songs = SongListStore();
   final downloads = DownloadsStore();
-  await Future.wait([settings.load(), songs.load(), downloads.load()]);
+  final auth = AuthStore(firebaseOk: firebaseOk);
+  await Future.wait([
+    settings.load(),
+    songs.load(),
+    downloads.load(),
+    auth.load(),
+  ]);
+
+  // Keeps downloads and cloud saves in sync (queues while offline).
+  final cloud = CloudSyncStore(auth, downloads);
+  await cloud.attach();
+  // The song list is kept in sync with the cloud too (queues while offline).
+  await songs.attach(auth);
+
   await loadYoutubeAuth();
   downloads.resumeQueue();
 
@@ -56,6 +107,10 @@ Future<void> main() async {
   final meter = BassMeter(hub);
   final gestures = GestureBridge(hub);
   await gestures.load();
+  // The camera stays off on the login and sign-up screens.
+  void syncCamera() => unawaited(gestures.setSuspended(!auth.inApp));
+  auth.addListener(syncCamera);
+  syncCamera();
 
   try {
     await AudioService.init(
@@ -71,19 +126,19 @@ Future<void> main() async {
     debugPrint('[PalmTunes] Lock-screen controls unavailable -> $e');
   }
 
-  runApp(
-    MultiProvider(
-      providers: [
-        ChangeNotifierProvider<SettingsStore>.value(value: settings),
-        ChangeNotifierProvider<SongListStore>.value(value: songs),
-        ChangeNotifierProvider<DownloadsStore>.value(value: downloads),
-        ChangeNotifierProvider<NavController>(create: (_) => NavController()),
-        ChangeNotifierProvider<PlayerHub>.value(value: hub),
-        Provider<BassMeter>.value(value: meter),
-        ChangeNotifierProvider<GestureBridge>.value(value: gestures),
-      ],
-      child: const PalmTunesApp(),
-    ),
+  return MultiProvider(
+    providers: [
+      ChangeNotifierProvider<SettingsStore>.value(value: settings),
+      ChangeNotifierProvider<SongListStore>.value(value: songs),
+      ChangeNotifierProvider<DownloadsStore>.value(value: downloads),
+      ChangeNotifierProvider<AuthStore>.value(value: auth),
+      ChangeNotifierProvider<CloudSyncStore>.value(value: cloud),
+      ChangeNotifierProvider<NavController>(create: (_) => NavController()),
+      ChangeNotifierProvider<PlayerHub>.value(value: hub),
+      Provider<BassMeter>.value(value: meter),
+      ChangeNotifierProvider<GestureBridge>.value(value: gestures),
+    ],
+    child: const PalmTunesApp(),
   );
 }
 
@@ -141,7 +196,7 @@ class PalmTunesApp extends StatelessWidget {
           const NotchHost(),
         ],
       ),
-      home: const AppShell(),
+      home: const AuthGate(child: AppShell()),
     );
   }
 }

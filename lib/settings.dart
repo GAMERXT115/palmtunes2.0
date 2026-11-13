@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'account_settings.dart';
 import 'downloads.dart';
 import 'gesture_bridge.dart';
 import 'legal_docs.dart';
@@ -261,6 +262,7 @@ class SettingsScreen extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
+        const AccountSection(),
 
         _Group(
           title: 'Camera gestures',

@@ -42,6 +42,11 @@ dependencies:
   palmtunes_hands:
     path: packages/palmtunes_hands
 
+  # Account + cloud (same Firebase project as the desktop app)
+  firebase_core: ^5.1.0
+  firebase_auth: any   # use the same version as the desktop pubspec
+  cloud_firestore: any   # use the same version as the desktop pubspec
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

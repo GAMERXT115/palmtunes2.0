@@ -46,6 +46,8 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
   int _session = 0;
   bool _starting = false;
   bool _background = false;
+  // The camera stays off on the login screens (see setSuspended).
+  bool _suspended = true;
 
   CameraController? _controller;
   CameraDescription? _description;
@@ -92,6 +94,18 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_enabled) unawaited(_start());
+  }
+
+  /// Keeps the camera off (true) or lets it run as set in settings (false).
+  Future<void> setSuspended(bool value) async {
+    if (_suspended == value) return;
+    _suspended = value;
+    if (value) {
+      if (_controller != null) await _stop();
+      _setStatus(GestureStatus.off);
+    } else if (_enabled || _previewWanted) {
+      unawaited(_start());
+    }
   }
 
   // ---- settings -----------------------------------------------------------
@@ -188,7 +202,7 @@ class GestureBridge extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _start() async {
-    if (_starting || _controller != null) return;
+    if (_suspended || _starting || _controller != null) return;
     if (!HandTracker.supported) {
       _setStatus(GestureStatus.unsupported);
       return;

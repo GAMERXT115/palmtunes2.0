@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
+import 'cloud_sync.dart';
 import 'player_hub.dart';
 import 'search.dart';
 import 'ui.dart';
@@ -1295,9 +1296,68 @@ class DownloadsScreen extends StatefulWidget {
 }
 
 class _DownloadsScreenState extends State<DownloadsScreen> {
+  static const double _fade = 16;
+
   String? _selected;
   bool _queueOpen = true;
-  bool _dragging = false;
+  final _draggingVideo = ValueNotifier<bool>(false);
+  final _barScroll = ScrollController();
+  final _listScroll = ScrollController();
+  final _listKey = GlobalKey();
+  Offset? _dragPos;
+  Timer? _autoScroll;
+
+  @override
+  void initState() {
+    super.initState();
+    _draggingVideo.addListener(_onDragState);
+  }
+
+  @override
+  void dispose() {
+    _draggingVideo.removeListener(_onDragState);
+    _autoScroll?.cancel();
+    _draggingVideo.dispose();
+    _barScroll.dispose();
+    _listScroll.dispose();
+    super.dispose();
+  }
+
+  // While a song is being dragged, holding it near the top or bottom edge of
+  // the list scrolls the list so long playlists can be reordered.
+  void _onDragState() {
+    if (_draggingVideo.value) {
+      _autoScroll ??= Timer.periodic(
+        const Duration(milliseconds: 16),
+        (_) => _tickAutoScroll(),
+      );
+    } else {
+      _autoScroll?.cancel();
+      _autoScroll = null;
+      _dragPos = null;
+    }
+  }
+
+  void _tickAutoScroll() {
+    final pos = _dragPos;
+    final box = _listKey.currentContext?.findRenderObject() as RenderBox?;
+    if (pos == null || box == null || !box.attached) return;
+    if (!_listScroll.hasClients) return;
+    final local = box.globalToLocal(pos);
+    if (local.dx < 0 || local.dx > box.size.width) return;
+    const edge = 70.0;
+    var delta = 0.0;
+    if (local.dy >= 0 && local.dy < edge) {
+      delta = -((edge - local.dy) / edge).clamp(0.0, 1.0) * 16;
+    } else if (local.dy > box.size.height - edge &&
+        local.dy <= box.size.height) {
+      delta =
+          ((local.dy - (box.size.height - edge)) / edge).clamp(0.0, 1.0) * 16;
+    }
+    if (delta == 0) return;
+    final sp = _listScroll.position;
+    sp.jumpTo((sp.pixels + delta).clamp(0.0, sp.maxScrollExtent));
+  }
 
   Future<void> _createCategory() async {
     final name = await _promptName(
@@ -1317,6 +1377,15 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
     }
     final c = store.addCategory(name);
     setState(() => _selected = c.id);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_barScroll.hasClients) {
+        _barScroll.animateTo(
+          _barScroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   Future<void> _categoryMenu(VideoCategory c) async {
@@ -1390,7 +1459,18 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
   }
 
   Future<void> _deleteSong(DownloadedVideo v) async {
+    final cloud = context.read<CloudSyncStore>();
     final store = context.read<DownloadsStore>();
+    if (cloud.canOfferCloudDelete(v.videoId)) {
+      final choice = await _askDeleteChoice(context, v);
+      if (choice == _DeleteChoice.cancel || !mounted) return;
+      // The file goes first, so the song is never uploaded again in between.
+      await store.deleteVideo(v.id);
+      if (choice == _DeleteChoice.deviceAndCloud) {
+        await cloud.removeFromCloud(v.videoId);
+      }
+      return;
+    }
     final ok = await confirmDelete(
       context,
       title: 'Delete download?',
@@ -1399,31 +1479,62 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
     if (ok) await store.deleteVideo(v.id);
   }
 
-  /// Called when a song is dropped on a playlist chip (or on All).
-  void _dropOn(String? categoryId, DownloadedVideo v) {
-    final store = context.read<DownloadsStore>();
-    if (v.categoryId == categoryId) return;
-    store.moveToCategory(v.id, categoryId);
-    final name = categoryId == null
-        ? 'All'
-        : (store.categoryById(categoryId)?.name ?? 'playlist');
+  Future<void> _downloadCloudSong(CloudSong s) async {
+    final msg = await context.read<CloudSyncStore>().downloadGhost(s);
+    if (!mounted) return;
+    if (msg != null) {
+      Notch.show(msg, icon: Icons.info_outline_rounded);
+    } else {
+      Notch.show(
+        'Downloading "${s.title}"',
+        icon: Icons.cloud_download_rounded,
+      );
+    }
+  }
+
+  Future<void> _downloadAllCloud() async {
+    final n = await context.read<CloudSyncStore>().downloadAllGhosts();
+    if (!mounted) return;
     Notch.show(
-      categoryId == null ? 'Removed from playlist' : 'Moved to "$name"',
-      icon: categoryId == null
-          ? Icons.library_music_rounded
-          : Icons.playlist_add_check_rounded,
+      n == 0
+          ? 'Nothing new to download'
+          : 'Downloading $n song${n == 1 ? '' : 's'} from the cloud',
+      icon: Icons.cloud_download_rounded,
+    );
+  }
+
+  Future<void> _removeCloudSong(CloudSong s) async {
+    final ok = await confirmDelete(
+      context,
+      title: 'Remove from the cloud?',
+      message:
+          'Remove "${s.title}" from the cloud? It will disappear from your other devices too.',
+      confirmLabel: 'Remove',
+    );
+    if (!ok || !mounted) return;
+    await context.read<CloudSyncStore>().removeFromCloud(s.videoId);
+  }
+
+  void _moveToAll(DownloadedVideo v) {
+    context.read<DownloadsStore>().moveToCategory(v.id, null);
+    Notch.show(
+      'Moved "${v.title}" back to All',
+      icon: Icons.playlist_remove_rounded,
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final store = context.watch<DownloadsStore>();
-    final accent = Theme.of(context).colorScheme.primary;
+    // Songs saved in the cloud that are not on this phone yet, shown at the
+    // bottom of the All playlist.
+    final cloud = context.watch<CloudSyncStore>();
     if (_selected != null && store.categoryById(_selected!) == null) {
       _selected = null;
     }
     final videos = store.videosIn(_selected);
     final queue = store.queueItems;
+    final ghosts = _selected == null ? cloud.ghosts : const <CloudSong>[];
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -1474,38 +1585,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          SizedBox(
-            height: 40,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              children: [
-                _Chip(
-                  label: 'All',
-                  count: store.countIn(null),
-                  selected: _selected == null,
-                  onTap: () => setState(() => _selected = null),
-                  acceptsDrop: (v) => v.categoryId != null,
-                  onDrop: (v) => _dropOn(null, v),
-                ),
-                for (final c in store.categories)
-                  _Chip(
-                    label: c.name,
-                    count: store.countIn(c.id),
-                    selected: _selected == c.id,
-                    onTap: () => setState(() => _selected = c.id),
-                    onLongPress: () => _categoryMenu(c),
-                    acceptsDrop: (v) => v.categoryId != c.id,
-                    onDrop: (v) => _dropOn(c.id, v),
-                  ),
-                _Chip(
-                  label: 'New',
-                  icon: Icons.add_rounded,
-                  selected: false,
-                  onTap: _createCategory,
-                ),
-              ],
-            ),
-          ),
+          _buildCategoryBar(store),
           const SizedBox(height: 10),
           if (queue.isNotEmpty) ...[
             _QueuePanel(
@@ -1516,130 +1596,144 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
             const SizedBox(height: 10),
           ],
           Expanded(
-            child: videos.isEmpty
+            child: (videos.isEmpty && ghosts.isEmpty)
                 ? _EmptyState(
                     inCategory: _selected != null,
                     sortedAway: _selected == null && store.videos.isNotEmpty,
                   )
-                : ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 170),
-                    itemCount: videos.length,
-                    itemBuilder: (context, i) {
-                      final v = videos[i];
-                      return _SongRow(
-                        key: ValueKey(v.id),
-                        video: v,
-                        onTap: () =>
-                            context.read<PlayerHub>().playDownloaded(videos, i),
-                        onRename: () => _renameSong(v),
-                        onDelete: () => _deleteSong(v),
-                        onDragChanged: (d) {
-                          if (_dragging != d) setState(() => _dragging = d);
-                        },
-                      );
-                    },
+                : Listener(
+                    onPointerDown: (e) => _dragPos = e.position,
+                    onPointerMove: (e) => _dragPos = e.position,
+                    child: ListView.builder(
+                      key: _listKey,
+                      controller: _listScroll,
+                      padding: const EdgeInsets.only(bottom: 170),
+                      itemCount:
+                          videos.length +
+                          (ghosts.isEmpty ? 0 : ghosts.length + 1),
+                      itemBuilder: (context, i) {
+                        if (i == videos.length) {
+                          return _CloudHeader(
+                            count: ghosts.length,
+                            online: cloud.online,
+                            pending: cloud.pendingCount,
+                            onDownloadAll: _downloadAllCloud,
+                          );
+                        }
+                        if (i > videos.length) {
+                          final g = ghosts[i - videos.length - 1];
+                          return _CloudRow(
+                            key: ValueKey('cloud_${g.videoId}'),
+                            song: g,
+                            state: store.stateOf(g.videoId),
+                            progress: store.progressOf(g.videoId),
+                            onDownload: () => _downloadCloudSong(g),
+                            onDelete: () => _removeCloudSong(g),
+                          );
+                        }
+                        final v = videos[i];
+                        return _SongRow(
+                          key: ValueKey(v.id),
+                          video: v,
+                          dragging: _draggingVideo,
+                          onPlay: () => context
+                              .read<PlayerHub>()
+                              .playDownloaded(videos, i),
+                          onRename: () => _renameSong(v),
+                          onDelete: () => _deleteSong(v),
+                          onSearch: () => context
+                              .read<NavController>()
+                              .searchFor(v.title),
+                          onMoveToAll: _selected == null
+                              ? null
+                              : () => _moveToAll(v),
+                          onReorder: (dragged) => context
+                              .read<DownloadsStore>()
+                              .reorderVideo(dragged.id, v.id),
+                        );
+                      },
+                    ),
                   ),
           ),
         ],
       ),
     );
   }
-}
 
-class _Chip extends StatelessWidget {
-  final String label;
-  final int? count;
-  final IconData? icon;
-  final bool selected;
-  final VoidCallback onTap;
-  final VoidCallback? onLongPress;
-  final bool Function(DownloadedVideo)? acceptsDrop;
-  final void Function(DownloadedVideo)? onDrop;
-
-  const _Chip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.count,
-    this.icon,
-    this.onLongPress,
-    this.acceptsDrop,
-    this.onDrop,
-  });
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildCategoryBar(DownloadsStore store) {
     final accent = Theme.of(context).colorScheme.primary;
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: DragTarget<DownloadedVideo>(
-        onWillAcceptWithDetails: (d) =>
-            onDrop != null && (acceptsDrop?.call(d.data) ?? true),
-        onAcceptWithDetails: (d) => onDrop?.call(d.data),
-        builder: (context, candidates, _) {
-          final hovering = candidates.isNotEmpty;
-          return GestureDetector(
-            onTap: onTap,
-            onLongPress: onLongPress,
-            child: AnimatedScale(
-              scale: hovering ? 1.12 : 1,
-              duration: const Duration(milliseconds: 140),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  color: hovering
-                      ? accent.withValues(alpha: 0.38)
-                      : selected
-                      ? accent.withValues(alpha: 0.18)
-                      : Colors.white.withValues(alpha: 0.05),
-                  border: Border.all(
-                    color: hovering
-                        ? accent
-                        : selected
-                        ? accent.withValues(alpha: 0.5)
-                        : Colors.white12,
-                    width: hovering ? 1.8 : 1,
+    return ValueListenableBuilder<bool>(
+      valueListenable: _draggingVideo,
+      builder: (context, dragging, _) => GlassContainer(
+        borderRadius: 18,
+        opacity: 0.12,
+        padding: const EdgeInsets.fromLTRB(10, 0, 0, 0),
+        borderColor: dragging ? accent.withValues(alpha: 0.6) : null,
+        child: SizedBox(
+          height: _FolderTile.height + 16,
+          child: Row(
+            children: [
+              _AllChip(
+                selected: _selected == null,
+                count: store.countIn(null),
+                onTap: () => setState(() => _selected = null),
+                onShuffle: () => context
+                    .read<PlayerHub>()
+                    .playDownloadedShuffled(store.videosIn(null)),
+              ),
+              const SizedBox(width: 10),
+              Container(
+                width: 1,
+                height: 56,
+                color: accent.withValues(alpha: 0.25),
+              ),
+              Expanded(
+                child: ShaderMask(
+                  blendMode: BlendMode.dstIn,
+                  shaderCallback: (rect) {
+                    final f = rect.width > _fade * 2 ? _fade / rect.width : 0.0;
+                    return LinearGradient(
+                      colors: const [
+                        Colors.transparent,
+                        Colors.white,
+                        Colors.white,
+                        Colors.transparent,
+                      ],
+                      stops: [0, f, 1 - f, 1],
+                    ).createShader(rect);
+                  },
+                  child: ListView(
+                    controller: _barScroll,
+                    scrollDirection: Axis.horizontal,
+                    clipBehavior: Clip.hardEdge,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: _fade,
+                      vertical: 8,
+                    ),
+                    children: [
+                      for (final c in store.categories)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 10),
+                          child: _CategoryChip(
+                            key: ValueKey(c.id),
+                            category: c,
+                            count: store.countIn(c.id),
+                            selected: _selected == c.id,
+                            onTap: () => setState(() => _selected = c.id),
+                            onShuffle: () => context
+                                .read<PlayerHub>()
+                                .playDownloadedShuffled(store.videosIn(c.id)),
+                            onMenu: () => _categoryMenu(c),
+                          ),
+                        ),
+                      _NewCategoryButton(onTap: _createCategory),
+                    ],
                   ),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (icon != null) ...[
-                      Icon(icon, size: 16, color: Colors.white70),
-                      const SizedBox(width: 4),
-                    ],
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 160),
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: selected || hovering ? accent : Colors.white70,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ),
-                    if (count != null) ...[
-                      const SizedBox(width: 6),
-                      Text(
-                        '$count',
-                        style: const TextStyle(
-                          color: Colors.white38,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
               ),
-            ),
-          );
-        },
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1862,72 +1956,146 @@ class _RetryCountdownState extends State<_RetryCountdown> {
 
 class _SongRow extends StatelessWidget {
   final DownloadedVideo video;
-  final VoidCallback onTap;
+  final ValueNotifier<bool> dragging;
+  final VoidCallback onPlay;
   final VoidCallback onRename;
   final VoidCallback onDelete;
-  final ValueChanged<bool> onDragChanged;
+  final VoidCallback onSearch;
+  final VoidCallback? onMoveToAll;
+  final void Function(DownloadedVideo dragged) onReorder;
 
   const _SongRow({
     super.key,
     required this.video,
-    required this.onTap,
+    required this.dragging,
+    required this.onPlay,
     required this.onRename,
     required this.onDelete,
-    required this.onDragChanged,
+    required this.onSearch,
+    required this.onReorder,
+    this.onMoveToAll,
   });
 
-  Widget _card(BuildContext context, {required bool playing, bool lifted = false}) {
+  Future<void> _openMenu(BuildContext context) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _Sheet(
+        title: video.title,
+        children: [
+          if (onMoveToAll != null)
+            _SheetTile(
+              Icons.playlist_remove_rounded,
+              'Move back to All',
+              () => Navigator.pop(ctx, 'all'),
+            ),
+          _SheetTile(
+            Icons.search_rounded,
+            'Search on YouTube',
+            () => Navigator.pop(ctx, 'search'),
+          ),
+          _SheetTile(
+            Icons.edit_rounded,
+            'Rename',
+            () => Navigator.pop(ctx, 'rename'),
+          ),
+          _SheetTile(
+            Icons.delete_outline_rounded,
+            'Delete',
+            () => Navigator.pop(ctx, 'delete'),
+            danger: true,
+          ),
+        ],
+      ),
+    );
+    switch (action) {
+      case 'all':
+        onMoveToAll?.call();
+      case 'search':
+        onSearch();
+      case 'rename':
+        onRename();
+      case 'delete':
+        onDelete();
+    }
+  }
+
+  Widget _card(
+    BuildContext context, {
+    required bool playing,
+    bool drop = false,
+    bool lifted = false,
+  }) {
     final accent = Theme.of(context).colorScheme.primary;
+    final v = video;
+    final meta = [
+      if (v.author.isNotEmpty) v.author,
+      formatDuration(v.duration),
+      formatBytes(v.sizeBytes),
+      if (v.audioOnly) 'Audio',
+    ].join('  •  ');
+
     return Container(
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        color: lifted
-            ? AppColors.panel
-            : Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        color: lifted ? AppColors.panel : Colors.white.withValues(alpha: 0.04),
         border: Border.all(
-          color: lifted
+          color: drop || lifted
               ? accent
               : playing
               ? accent.withValues(alpha: 0.6)
-              : Colors.white.withValues(alpha: 0.07),
+              : Colors.white.withValues(alpha: 0.06),
+          width: drop ? 2 : 1,
         ),
       ),
-      padding: const EdgeInsets.all(8),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: SizedBox(
-              width: 96,
-              height: 54,
-              child: ThumbImage(source: video.thumbSource),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  video.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: playing ? accent : Colors.white,
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w600,
-                    height: 1.25,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(6, 6, 0, 6),
+        child: Row(
+          children: [
+            _Thumb(video: v, width: 100),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    v.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      height: 1.25,
+                      fontWeight: FontWeight.w600,
+                      color: playing ? accent : Colors.white,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  '${formatDuration(video.duration)} · ${formatBytes(video.sizeBytes)}',
-                  style: const TextStyle(color: Colors.white54, fontSize: 11.5),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  Text(
+                    meta,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: Colors.white54,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+            if (!lifted)
+              IconButton(
+                onPressed: () => _openMenu(context),
+                icon: const Icon(Icons.more_vert_rounded, size: 20),
+                color: Colors.white60,
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
+              )
+            else
+              const SizedBox(width: 12),
+          ],
+        ),
       ),
     );
   }
@@ -1939,63 +2107,75 @@ class _SongRow extends StatelessWidget {
     );
     final accent = Theme.of(context).colorScheme.primary;
 
-    final draggable = LongPressDraggable<DownloadedVideo>(
-      data: video,
-      delay: const Duration(milliseconds: 350),
-      hapticFeedbackOnStart: true,
-      dragAnchorStrategy: pointerDragAnchorStrategy,
-      onDragStarted: () => onDragChanged(true),
-      onDragEnd: (_) => onDragChanged(false),
-      onDraggableCanceled: (_, _) => onDragChanged(false),
-      feedback: Transform.translate(
-        offset: const Offset(-48, -34),
-        child: Material(
-          color: Colors.transparent,
-          elevation: 10,
-          shadowColor: accent,
-          borderRadius: BorderRadius.circular(16),
-          child: SizedBox(
-            width: 260,
-            child: _card(context, playing: false, lifted: true),
-          ),
-        ),
-      ),
-      childWhenDragging: Opacity(
-        opacity: 0.3,
-        child: _card(context, playing: playing),
-      ),
-      child: GestureDetector(
-        onTap: onTap,
-        child: _card(context, playing: playing),
-      ),
-    );
-
+    // Dropping a song on another song of the same playlist puts it there.
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Dismissible(
-        key: ValueKey('swipe-${video.id}'),
-        direction: DismissDirection.horizontal,
-        background: _swipeBg(
-          accent.withValues(alpha: 0.25),
-          Icons.edit_rounded,
-          accent,
-          Alignment.centerLeft,
-        ),
-        secondaryBackground: _swipeBg(
-          Colors.redAccent.shade200.withValues(alpha: 0.25),
-          Icons.delete_outline_rounded,
-          Colors.redAccent.shade200,
-          Alignment.centerRight,
-        ),
-        confirmDismiss: (dir) async {
-          if (dir == DismissDirection.startToEnd) {
-            onRename();
-          } else {
-            onDelete();
-          }
-          return false;
+      padding: const EdgeInsets.only(bottom: 6),
+      child: DragTarget<DownloadedVideo>(
+        onWillAcceptWithDetails: (d) =>
+            d.data.id != video.id && d.data.categoryId == video.categoryId,
+        onAcceptWithDetails: (d) => onReorder(d.data),
+        builder: (context, candidates, _) {
+          final draggable = LongPressDraggable<DownloadedVideo>(
+            data: video,
+            delay: const Duration(milliseconds: 350),
+            hapticFeedbackOnStart: true,
+            dragAnchorStrategy: pointerDragAnchorStrategy,
+            onDragStarted: () => dragging.value = true,
+            onDragEnd: (_) => dragging.value = false,
+            onDraggableCanceled: (_, _) => dragging.value = false,
+            feedback: Transform.translate(
+              offset: const Offset(-48, -34),
+              child: Material(
+                color: Colors.transparent,
+                elevation: 10,
+                shadowColor: accent,
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  width: 270,
+                  child: _card(context, playing: false, lifted: true),
+                ),
+              ),
+            ),
+            childWhenDragging: Opacity(
+              opacity: 0.3,
+              child: _card(context, playing: playing),
+            ),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onPlay,
+              child: _card(
+                context,
+                playing: playing,
+                drop: candidates.isNotEmpty,
+              ),
+            ),
+          );
+          return Dismissible(
+            key: ValueKey('swipe-${video.id}'),
+            direction: DismissDirection.horizontal,
+            background: _swipeBg(
+              accent.withValues(alpha: 0.25),
+              Icons.edit_rounded,
+              accent,
+              Alignment.centerLeft,
+            ),
+            secondaryBackground: _swipeBg(
+              Colors.redAccent.shade200.withValues(alpha: 0.25),
+              Icons.delete_outline_rounded,
+              Colors.redAccent.shade200,
+              Alignment.centerRight,
+            ),
+            confirmDismiss: (dir) async {
+              if (dir == DismissDirection.startToEnd) {
+                onRename();
+              } else {
+                onDelete();
+              }
+              return false;
+            },
+            child: draggable,
+          );
         },
-        child: draggable,
       ),
     );
   }
@@ -2006,7 +2186,7 @@ class _SongRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 22),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Icon(icon, color: fg),
     );
@@ -2299,6 +2479,728 @@ class _DeleteCategoryDialog extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+
+class _Thumb extends StatelessWidget {
+  final DownloadedVideo video;
+  final double width;
+
+  const _Thumb({required this.video, required this.width});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: SizedBox(
+        width: width,
+        height: width * 9 / 16,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            ThumbImage(source: video.thumbSource),
+            Positioned(
+              right: 4,
+              bottom: 4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.75),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  formatDuration(video.duration),
+                  style: const TextStyle(
+                    fontSize: 9.5,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RowIcon extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  final Color? color;
+
+  const _RowIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onTap,
+      icon: Icon(icon, size: 18),
+      color: color ?? Colors.white60,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
+    );
+  }
+}
+
+/// A playlist tile: icon, name (always two lines tall so every tile matches)
+/// and the number of songs inside.
+class _FolderTile extends StatelessWidget {
+  static const double width = 112;
+  static const double height = 94;
+
+  final String label;
+  final int count;
+  final bool selected;
+  final bool hovering;
+  final bool ghost;
+  final IconData icon;
+  final IconData selectedIcon;
+  final Widget? corner;
+
+  /// When set (and the tile is selected) the icon turns into a button.
+  final VoidCallback? onIconTap;
+
+  const _FolderTile({
+    required this.label,
+    required this.count,
+    required this.selected,
+    this.hovering = false,
+    this.ghost = false,
+    this.icon = Icons.queue_music_rounded,
+    this.selectedIcon = Icons.queue_music_rounded,
+    this.corner,
+    this.onIconTap,
+  });
+
+  Widget _iconWidget(Color accent, bool active) {
+    final iconWidget = AnimatedScale(
+      duration: const Duration(milliseconds: 180),
+      scale: hovering ? 1.15 : 1,
+      child: Icon(
+        selected ? selectedIcon : icon,
+        size: 26,
+        color: active ? accent : accent.withValues(alpha: 0.75),
+      ),
+    );
+    final tap = onIconTap;
+    if (!selected || ghost || tap == null) return iconWidget;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: tap,
+      child: Container(
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: accent.withValues(alpha: hovering ? 0.30 : 0.18),
+        ),
+        child: iconWidget,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final active = selected || hovering || ghost;
+
+    final List<Color> colors;
+    final Color borderColor;
+    if (hovering) {
+      colors = [accent.withValues(alpha: 0.42), accent.withValues(alpha: 0.18)];
+      borderColor = accent.withValues(alpha: 0.95);
+    } else if (active) {
+      colors = [accent.withValues(alpha: 0.30), accent.withValues(alpha: 0.10)];
+      borderColor = accent.withValues(alpha: 0.6);
+    } else {
+      colors = [accent.withValues(alpha: 0.12), accent.withValues(alpha: 0.04)];
+      borderColor = accent.withValues(alpha: 0.22);
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: ghost ? const Color(0xFF231417) : null,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: colors,
+        ),
+        border: Border.all(color: borderColor, width: hovering ? 2 : 1.2),
+        boxShadow: active
+            ? [
+                BoxShadow(
+                  color: accent.withValues(
+                    alpha: ghost || hovering ? 0.45 : 0.22,
+                  ),
+                  blurRadius: ghost || hovering ? 22 : 12,
+                ),
+              ]
+            : null,
+      ),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _iconWidget(accent, active),
+                    const SizedBox(height: 5),
+                    SizedBox(
+                      height: 31,
+                      child: Center(
+                        child: Text(
+                          label,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: active ? Colors.white : Colors.white70,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12.5,
+                            height: 1.2,
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      downloadsLabel(count),
+                      maxLines: 1,
+                      style: TextStyle(
+                        color: active ? Colors.white70 : Colors.white38,
+                        fontSize: 10.5,
+                        height: 1.2,
+                        fontWeight: FontWeight.w500,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (corner != null) Positioned(top: 3, right: 3, child: corner!),
+        ],
+      ),
+    );
+  }
+}
+
+class _AllChip extends StatelessWidget {
+  final bool selected;
+  final int count;
+  final VoidCallback onTap;
+  final VoidCallback onShuffle;
+
+  const _AllChip({
+    required this.selected,
+    required this.count,
+    required this.onTap,
+    required this.onShuffle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.read<DownloadsStore>();
+    // Dropping a song here takes it out of its playlist and puts it back in All.
+    return DragTarget<Object>(
+      onWillAcceptWithDetails: (d) {
+        final data = d.data;
+        return data is DownloadedVideo && data.categoryId != null;
+      },
+      onAcceptWithDetails: (d) {
+        final data = d.data;
+        if (data is DownloadedVideo) {
+          store.moveToCategory(data.id, null);
+          Notch.show(
+            'Moved "${data.title}" back to All',
+            icon: Icons.video_library_rounded,
+          );
+        }
+      },
+      builder: (context, candidates, _) => GestureDetector(
+        onTap: onTap,
+        child: _FolderTile(
+          label: 'All',
+          count: count,
+          selected: selected,
+          hovering: candidates.isNotEmpty,
+          icon: Icons.video_library_outlined,
+          selectedIcon: Icons.play_arrow_rounded,
+          onIconTap: count > 0 ? onShuffle : null,
+        ),
+      ),
+    );
+  }
+}
+
+class _CategoryChip extends StatelessWidget {
+  final VideoCategory category;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onShuffle;
+  final VoidCallback onMenu;
+
+  const _CategoryChip({
+    super.key,
+    required this.category,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+    required this.onShuffle,
+    required this.onMenu,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.read<DownloadsStore>();
+    return DragTarget<Object>(
+      onWillAcceptWithDetails: (d) {
+        final data = d.data;
+        if (data is DownloadedVideo) return data.categoryId != category.id;
+        if (data is VideoCategory) return data.id != category.id;
+        return false;
+      },
+      onAcceptWithDetails: (d) {
+        final data = d.data;
+        if (data is DownloadedVideo) {
+          store.moveToCategory(data.id, category.id);
+          Notch.show(
+            'Moved "${data.title}" to ${category.name}',
+            icon: Icons.playlist_add_check_rounded,
+          );
+        } else if (data is VideoCategory) {
+          store.reorderCategory(data.id, category.id);
+        }
+      },
+      builder: (context, candidates, _) {
+        final hovering = candidates.isNotEmpty;
+        final tile = _FolderTile(
+          label: category.name,
+          count: count,
+          selected: selected,
+          hovering: hovering,
+          selectedIcon: Icons.play_arrow_rounded,
+          onIconTap: count > 0 ? onShuffle : null,
+          corner: selected
+              ? GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: onMenu,
+                  child: Container(
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.black.withValues(alpha: 0.3),
+                    ),
+                    child: const Icon(
+                      Icons.more_horiz_rounded,
+                      size: 14,
+                      color: Colors.white,
+                    ),
+                  ),
+                )
+              : null,
+        );
+        // Hold a playlist tile and drag it onto another one to reorder.
+        return LongPressDraggable<VideoCategory>(
+          data: category,
+          delay: const Duration(milliseconds: 250),
+          hapticFeedbackOnStart: true,
+          feedback: Material(
+            type: MaterialType.transparency,
+            child: Opacity(
+              opacity: 0.85,
+              child: Transform.rotate(
+                angle: -0.04,
+                child: Transform.scale(
+                  scale: 1.06,
+                  child: _FolderTile(
+                    label: category.name,
+                    count: count,
+                    selected: true,
+                    ghost: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          childWhenDragging: Opacity(opacity: 0.25, child: tile),
+          child: GestureDetector(onTap: onTap, child: tile),
+        );
+      },
+    );
+  }
+}
+
+class _NewCategoryButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _NewCategoryButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: _FolderTile.width,
+        height: _FolderTile.height,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          color: accent.withValues(alpha: 0.04),
+          border: Border.all(color: accent.withValues(alpha: 0.35), width: 1.2),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.playlist_add_rounded, size: 26, color: accent),
+              const SizedBox(height: 5),
+              Text(
+                'New playlist',
+                style: TextStyle(
+                  color: accent,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _DeleteChoice { cancel, deviceAndCloud, deviceOnly }
+
+/// Delete dialog for a song that is also saved in the cloud.
+Future<_DeleteChoice> _askDeleteChoice(
+  BuildContext context,
+  DownloadedVideo v,
+) async {
+  final danger = Colors.redAccent.shade200;
+  final result = await showDialog<_DeleteChoice>(
+    context: context,
+    builder: (ctx) => Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: GlassContainer(
+          borderRadius: 20,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: danger.withValues(alpha: 0.15),
+                    ),
+                    child: Icon(
+                      Icons.warning_amber_rounded,
+                      color: danger,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Delete download?',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '"${v.title}" is also saved in your cloud. Delete it only from this device, or from the cloud too?',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  height: 1.4,
+                  fontSize: 13.5,
+                ),
+              ),
+              const SizedBox(height: 18),
+              // Stacked on a phone: three buttons do not fit in one row.
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: danger,
+                  minimumSize: const Size.fromHeight(44),
+                ),
+                onPressed: () =>
+                    Navigator.pop(ctx, _DeleteChoice.deviceAndCloud),
+                child: const Text('Delete from Device & Cloud'),
+              ),
+              const SizedBox(height: 8),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: danger.withValues(alpha: 0.55),
+                  minimumSize: const Size.fromHeight(44),
+                ),
+                onPressed: () => Navigator.pop(ctx, _DeleteChoice.deviceOnly),
+                child: const Text('Delete from Device'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                  minimumSize: const Size.fromHeight(44),
+                  side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
+                ),
+                onPressed: () => Navigator.pop(ctx, _DeleteChoice.cancel),
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  return result ?? _DeleteChoice.cancel;
+}
+
+/// Heading of the "Cloud Saves" section at the bottom of All.
+class _CloudHeader extends StatelessWidget {
+  final int count;
+  final bool online;
+  final int pending;
+  final VoidCallback onDownloadAll;
+  const _CloudHeader({
+    required this.count,
+    required this.online,
+    required this.pending,
+    required this.onDownloadAll,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final status = !online
+        ? 'Offline${pending > 0 ? '  •  $pending waiting' : ''}'
+        : pending > 0
+        ? 'Syncing $pending...'
+        : null;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 14, 0, 10),
+      child: Row(
+        children: [
+          Icon(Icons.cloud_outlined, size: 17, color: accent),
+          const SizedBox(width: 8),
+          const Text(
+            'Cloud Saves',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              color: accent.withValues(alpha: 0.15),
+            ),
+            child: Text(
+              '$count',
+              style: TextStyle(
+                color: accent,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Download all cloud saves to this phone',
+            onPressed: onDownloadAll,
+            icon: Icon(Icons.cloud_download_rounded, size: 19, color: accent),
+            padding: EdgeInsets.zero,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
+          ),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: status == null
+                  ? const SizedBox.shrink()
+                  : Text(
+                      status,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11.5,
+                      ),
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A song that is in the cloud but not on this phone: a faded card with a
+/// cloud download button.
+class _CloudRow extends StatelessWidget {
+  final CloudSong song;
+  final DownloadState state;
+  final double? progress;
+  final VoidCallback onDownload;
+  final VoidCallback onDelete;
+
+  const _CloudRow({
+    super.key,
+    required this.song,
+    required this.state,
+    required this.progress,
+    required this.onDownload,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final busy =
+        state == DownloadState.queued ||
+        state == DownloadState.downloading ||
+        state == DownloadState.failed;
+    final meta = [
+      if (song.author.isNotEmpty) song.author,
+      formatDuration(song.duration),
+      if (song.audioOnly) 'Audio',
+      'In the cloud',
+    ].join('  •  ');
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(6, 6, 0, 6),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white.withValues(alpha: 0.02),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Row(
+        children: [
+          Opacity(
+            opacity: 0.5,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 100,
+                height: 100 * 9 / 16,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ThumbImage(source: song.thumbnailUrl),
+                    Container(
+                      color: Colors.black45,
+                      child: const Center(
+                        child: Icon(
+                          Icons.cloud_download_outlined,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Opacity(
+              opacity: 0.65,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    song.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      height: 1.25,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    meta,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: Colors.white54,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (busy)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  value: state == DownloadState.downloading ? progress : null,
+                ),
+              ),
+            )
+          else
+            _RowIcon(
+              icon: Icons.cloud_download_rounded,
+              tooltip: 'Download to this phone',
+              color: accent,
+              onTap: onDownload,
+            ),
+          _RowIcon(
+            icon: Icons.delete_outline_rounded,
+            tooltip: 'Remove from the cloud',
+            color: Colors.redAccent.shade100,
+            onTap: onDelete,
+          ),
+        ],
       ),
     );
   }

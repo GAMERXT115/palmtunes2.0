@@ -1,0 +1,83 @@
+{
+  "project_info": {
+    "project_number": "721694096562",
+    "firebase_url": "https://palmtunes2-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "palmtunes2",
+    "storage_bucket": "palmtunes2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:721694096562:android:7db8d0e44f079e82191dab",
+        "android_client_info": {
+          "package_name": "com.example.musicappphone"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "721694096562-2vu0flcvbfl1vrflc9h9f94itaumn1om.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAZu8_CRi9R9t96SUMM_X261bv2qa3Macs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "721694096562-2vu0flcvbfl1vrflc9h9f94itaumn1om.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "721694096562-tp17r43o0veqkuinambkm8uqsvmrhgua.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.hamtech.palmtunes"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:721694096562:android:ea04ec11693f7a4d191dab",
+        "android_client_info": {
+          "package_name": "com.hamtech.palmtunes"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "721694096562-2vu0flcvbfl1vrflc9h9f94itaumn1om.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAZu8_CRi9R9t96SUMM_X261bv2qa3Macs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "721694096562-2vu0flcvbfl1vrflc9h9f94itaumn1om.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "721694096562-tp17r43o0veqkuinambkm8uqsvmrhgua.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.hamtech.palmtunes"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
