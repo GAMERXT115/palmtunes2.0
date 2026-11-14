@@ -87,12 +87,10 @@ Future<Widget> _boot() async {
   final songs = SongListStore();
   final downloads = DownloadsStore();
   final auth = AuthStore(firebaseOk: firebaseOk);
-  await Future.wait([
-    settings.load(),
-    songs.load(),
-    downloads.load(),
-    auth.load(),
-  ]);
+  await Future.wait([settings.load(), songs.load(), auth.load()]);
+
+  // Every account (and guest mode) has its own downloads and song list.
+  await downloads.bind(auth);
 
   // Face ID for opening the app (only for signed-in accounts).
   final biometric = BiometricLock();
@@ -109,12 +107,21 @@ Future<Widget> _boot() async {
 
   final hub = PlayerHub(settings: settings, downloads: downloads);
   await hub.initDeviceVolume();
+  // Whatever is playing belongs to the previous account: stop it on a switch.
+  var lastScope = downloads.scope;
+  downloads.addListener(() {
+    if (downloads.scope != lastScope) {
+      lastScope = downloads.scope;
+      unawaited(hub.close());
+    }
+  });
   final meter = BassMeter(hub);
   final gestures = GestureBridge(hub);
   await gestures.load();
   // The camera stays off on the login and sign-up screens.
-  void syncCamera() =>
-      unawaited(gestures.setSuspended(!auth.inApp || biometric.locked));
+  void syncCamera() => unawaited(
+    gestures.setSuspended(!auth.inApp || biometric.locked),
+  );
   auth.addListener(syncCamera);
   biometric.addListener(syncCamera);
   syncCamera();

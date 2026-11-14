@@ -330,6 +330,7 @@ class CloudSyncStore extends ChangeNotifier {
   /// is fresh, downloads every cloud song that is not on this phone.
   void _maybeAutoDownload() {
     if (_uid == null || !_fresh || _autoDone || !auth.autoDownloadCloud) return;
+    if (downloads.switching || downloads.scope != _uid) return;
     _autoDone = true;
     unawaited(() async {
       final n = await downloadAllGhosts();
@@ -347,10 +348,12 @@ class CloudSyncStore extends ChangeNotifier {
   // ---------------------------------------------------------------------
 
   void _onDownloads() {
-    final sig = downloads.videos.map((v) => v.videoId).join(',');
+    final sig =
+        '${downloads.scope}|${downloads.videos.map((v) => v.videoId).join(',')}';
     if (sig == _localSig) return;
     _localSig = sig;
     _reconcile();
+    _maybeAutoDownload();
     notifyListeners();
   }
 
@@ -358,6 +361,8 @@ class CloudSyncStore extends ChangeNotifier {
   /// queue (when cloud saving is on).
   void _reconcile() {
     if (!enabled) return;
+    // The downloads must belong to this same account, never to the previous one.
+    if (downloads.switching || downloads.scope != _uid) return;
     final localIds = {for (final v in downloads.videos) v.videoId};
     _synced.removeWhere(
       (id) => !localIds.contains(id) && !_cloud.containsKey(id),

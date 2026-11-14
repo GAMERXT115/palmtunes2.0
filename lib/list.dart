@@ -139,7 +139,8 @@ class _ListOp {
 /// merged in as it arrives. There is no separate cloud list: both sides are
 /// made equal.
 class SongListStore extends ChangeNotifier {
-  static const _prefsKey = 'palm_tunes_song_list';
+  static const _prefsKey = 'palm_tunes_song_list'; // before accounts were separated
+  static String _keyFor(String scope) => 'palm_tunes_song_list_$scope';
   static const _probeHost = 'firestore.googleapis.com';
   static const _settle = Duration(seconds: 30);
 
@@ -154,6 +155,8 @@ class SongListStore extends ChangeNotifier {
   AuthStore? _auth;
   SharedPreferences? _prefs;
   String? _uid;
+  String? _scope; // whose list is open: a uid, 'guest', or null
+  bool _scopeReady = false;
   final Map<String, _ListOp> _queue = {};
 
   /// Entries that were in the cloud at some point. One that is here, but no
@@ -176,30 +179,66 @@ class SongListStore extends ChangeNotifier {
   int get pendingCount => _queue.length;
   DateTime? get lastSynced => _lastSynced;
 
+  /// Only opens the storage. The list itself is opened per account, in
+  /// [attach], once it is known who is signed in.
   Future<void> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    _prefs = prefs;
-    final raw = prefs.getString(_prefsKey);
-    if (raw == null) return;
+    _prefs = await SharedPreferences.getInstance();
+  }
+
+  List<SongEntry> _parse(String? raw) {
+    final out = <SongEntry>[];
+    if (raw == null) return out;
     try {
       final list = jsonDecode(raw) as List;
       var legacy = false;
-      _items.clear();
       for (final e in list) {
         final m = Map<String, dynamic>.from(e as Map);
         if (m['sortAt'] == null) legacy = true;
-        _items.add(SongEntry.fromJson(m));
+        out.add(SongEntry.fromJson(m));
       }
       if (legacy) {
         // A list saved before syncing existed: keep its order.
         final base = _nowMs();
-        for (var i = 0; i < _items.length; i++) {
-          _items[i].sortAt = base.subtract(Duration(milliseconds: i * 1000));
+        for (var i = 0; i < out.length; i++) {
+          out[i].sortAt = base.subtract(Duration(milliseconds: i * 1000));
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// Swaps the open list for the one of [scope] (null = nobody signed in).
+  /// Songs added in guest mode move into the account that signs in.
+  void _openScope(String? scope) {
+    if (_scopeReady && scope == _scope) return;
+    _scopeReady = true;
+    _scope = scope;
+    _items.clear();
+    final prefs = _prefs;
+    if (scope != null && prefs != null) {
+      var raw = prefs.getString(_keyFor(scope));
+      // The one list that existed before accounts were separated goes to the
+      // first account (or guest) that opens the app.
+      if (raw == null && prefs.containsKey(_prefsKey)) {
+        raw = prefs.getString(_prefsKey);
+        if (raw != null) prefs.setString(_keyFor(scope), raw);
+        prefs.remove(_prefsKey);
+      }
+      _items.addAll(_parse(raw));
+      if (scope != 'guest') {
+        final guestRaw = prefs.getString(_keyFor('guest'));
+        if (guestRaw != null) {
+          for (final g in _parse(guestRaw)) {
+            if (_items.any((e) => e.id == g.id || e.key == g.key)) continue;
+            _items.add(g); // goes to the cloud with the next sync
+          }
+          prefs.remove(_keyFor('guest'));
+          _sort();
+          unawaited(_save());
         }
       }
       _sort();
-    } catch (_) {}
-    notifyListeners();
+    }
   }
 
   void _sort() {
@@ -210,10 +249,12 @@ class SongListStore extends ChangeNotifier {
   }
 
   Future<void> _save() async {
+    final scope = _scope;
+    if (scope == null) return;
     final prefs = _prefs ?? await SharedPreferences.getInstance();
     _prefs = prefs;
     await prefs.setString(
-      _prefsKey,
+      _keyFor(scope),
       jsonEncode(_items.map((e) => e.toJson()).toList()),
     );
   }
@@ -335,6 +376,13 @@ class SongListStore extends ChangeNotifier {
   void _onAuth() {
     final auth = _auth;
     if (auth == null) return;
+    if (auth.status != AuthStatus.loading) {
+      _openScope(
+        auth.status == AuthStatus.guest
+            ? 'guest'
+            : (auth.status == AuthStatus.signedIn ? auth.uid : null),
+      );
+    }
     final uid = auth.status == AuthStatus.signedIn ? auth.uid : null;
     if (uid != _uid) {
       _unbind();

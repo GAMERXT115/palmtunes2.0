@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
+import 'auth_store.dart';
 import 'cloud_sync.dart';
 import 'player_hub.dart';
 import 'search.dart';
@@ -291,6 +292,21 @@ class DownloadsStore extends ChangeNotifier {
   bool _started = false;
   bool _disposed = false;
 
+  // ---- whose library this is
+  AuthStore? _auth;
+  String? _scope; // the uid of the signed-in account, 'guest', or null
+  String? _target;
+  bool _loaded = false;
+  bool _applying = false;
+  bool _switching = false;
+
+  /// Whose library is open right now: the account's uid, 'guest', or null
+  /// when nobody is signed in.
+  String? get scope => _scope;
+
+  /// True while the library is being swapped for another account's.
+  bool get switching => _switching;
+
   List<DownloadedVideo> get videos => List.unmodifiable(_videos);
   List<VideoCategory> get categories => List.unmodifiable(_categories);
   List<YtVideo> get activeDownloads =>
@@ -316,13 +332,202 @@ class DownloadsStore extends ChangeNotifier {
     super.notifyListeners();
   }
 
-  Future<void> load() async {
-    final dir = await getApplicationSupportDirectory();
-    _dbFile = File(p.join(dir.path, 'palm_tunes_library.json'));
-    if (await _dbFile!.exists()) {
+  // ---------------------------------------------------------------------
+  // One library per account
+  // ---------------------------------------------------------------------
+  //
+  // Every account (and guest mode) has its own list of downloads, playlists
+  // and queue. Nothing one account downloads is visible to another one.
+  // Songs downloaded as a guest move to the account that signs in next.
+
+  static String? _scopeOf(AuthStore a) {
+    switch (a.status) {
+      case AuthStatus.guest:
+        return 'guest';
+      case AuthStatus.signedIn:
+        return a.uid;
+      case AuthStatus.loading:
+      case AuthStatus.signedOut:
+        return null;
+    }
+  }
+
+  /// Opens the library of whoever is signed in, and follows every change of
+  /// account from now on.
+  Future<void> bind(AuthStore auth) async {
+    _auth = auth;
+    auth.addListener(_onAuth);
+    _target = _scopeOf(auth);
+    await _syncScope();
+  }
+
+  void _onAuth() {
+    final a = _auth;
+    if (a == null || a.status == AuthStatus.loading) return;
+    final next = _scopeOf(a);
+    if (next == _target) return;
+    _target = next;
+    unawaited(_syncScope());
+  }
+
+  Future<void> _syncScope() async {
+    if (_applying) return; // the running loop picks up the newest target
+    _applying = true;
+    try {
+      while (!_loaded || _scope != _target) {
+        await _switchTo(_target);
+        _loaded = true;
+      }
+    } finally {
+      _applying = false;
+    }
+  }
+
+  Future<void> _switchTo(String? target) async {
+    _switching = true;
+    try {
+      // Park whatever is downloading: its progress stays on disk and it
+      // carries on when that account comes back.
+      for (final t in _tasks.values) {
+        if (t.state == DownloadState.downloading) {
+          t.preempted = true;
+          t.abort();
+        }
+      }
+      final giveUp = DateTime.now().add(const Duration(seconds: 8));
+      while (_tasks.values.any((t) => t.state == DownloadState.downloading) &&
+          DateTime.now().isBefore(giveUp)) {
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+      }
+      _save();
+      await _saveChain;
+
+      _videos.clear();
+      _categories.clear();
+      _tasks.clear();
+      _customDir = null;
+      _dbFile = null;
+      _scope = target;
+      if (target != null) await _openLibrary(target);
+    } catch (e) {
+      debugPrint('[PalmTunes] Could not open the library -> $e');
+    } finally {
+      _switching = false;
+    }
+    notifyListeners();
+    _pump();
+    if (_started) unawaited(backfillThumbnails());
+  }
+
+  Future<void> _openLibrary(String scope) async {
+    final support = await getApplicationSupportDirectory();
+    final dir = Directory(p.join(support.path, 'library', scope));
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final file = File(p.join(dir.path, 'palm_tunes_library.json'));
+    _dbFile = file;
+
+    // The single library that existed before accounts were separated goes to
+    // the first account (or guest) that opens the app.
+    final legacy = File(p.join(support.path, 'palm_tunes_library.json'));
+    if (!await file.exists() && await legacy.exists()) {
+      try {
+        await legacy.copy(file.path);
+        await legacy.rename('${legacy.path}.migrated');
+      } catch (_) {}
+    }
+
+    await _readDb(file, support.path, dir.path);
+    if (scope != 'guest') await _absorbGuest(support.path, dir.path);
+  }
+
+  /// Everything downloaded in guest mode moves into the account that signs
+  /// in: songs, playlists (same name = same playlist) and unfinished
+  /// downloads.
+  Future<void> _absorbGuest(String supportPath, String scopeDir) async {
+    final guestFile = File(
+      p.join(supportPath, 'library', 'guest', 'palm_tunes_library.json'),
+    );
+    if (!await guestFile.exists()) return;
+    try {
+      // Read the guest library into the fields, then put the account's back.
+      final mv = List<DownloadedVideo>.of(_videos);
+      final mc = List<VideoCategory>.of(_categories);
+      final mt = Map<String, _DownloadTask>.of(_tasks);
+      final md = _customDir;
+      final accountFile = _dbFile;
+      _videos.clear();
+      _categories.clear();
+      _tasks.clear();
+      _dbFile = guestFile;
+      await _readDb(
+        guestFile,
+        supportPath,
+        p.join(supportPath, 'library', 'guest'),
+      );
+      final gv = List<DownloadedVideo>.of(_videos);
+      final gc = List<VideoCategory>.of(_categories);
+      final gt = Map<String, _DownloadTask>.of(_tasks);
+      _videos
+        ..clear()
+        ..addAll(mv);
+      _categories
+        ..clear()
+        ..addAll(mc);
+      _tasks
+        ..clear()
+        ..addAll(mt);
+      _customDir = md;
+      _dbFile = accountFile;
+
+      final idMap = <String, String>{};
+      for (final c in gc) {
+        final same = _categories
+            .where(
+              (x) => x.name.trim().toLowerCase() == c.name.trim().toLowerCase(),
+            )
+            .firstOrNull;
+        if (same != null) {
+          idMap[c.id] = same.id;
+        } else {
+          _categories.add(c);
+          idMap[c.id] = c.id;
+        }
+      }
+      for (final v in gv) {
+        if (_videos.any((x) => x.videoId == v.videoId)) {
+          await _deleteFiles(v); // the account already has this song
+          continue;
+        }
+        final cat = v.categoryId;
+        v.categoryId = cat == null ? null : idMap[cat];
+        _videos.add(v);
+      }
+      for (final t in gt.values) {
+        final id = t.video.id;
+        if (_tasks.containsKey(id) || _videos.any((x) => x.videoId == id)) {
+          await _deletePartFiles(t);
+          continue;
+        }
+        _tasks[id] = t; // keeps going where it stopped
+      }
+      _save();
+      await _saveChain;
+      await guestFile.delete();
+    } catch (e) {
+      debugPrint('[PalmTunes] Moving the guest library failed -> $e');
+    }
+  }
+
+  Future<void> _readDb(
+    File dbFile,
+    String supportPath,
+    String scopeDirPath,
+  ) async {
+    final dir = Directory(supportPath);
+    if (await dbFile.exists()) {
       try {
         final data =
-            jsonDecode(await _dbFile!.readAsString()) as Map<String, dynamic>;
+            jsonDecode(await dbFile.readAsString()) as Map<String, dynamic>;
         _customDir = data['downloadDir'] as String?;
         _categories
           ..clear()
@@ -356,12 +561,14 @@ class DownloadsStore extends ChangeNotifier {
           const thumbs = '/thumbnails/';
           final j = path.indexOf(thumbs);
           if (j >= 0) {
-            final c = p.join(
-              dir.path,
-              'thumbnails',
-              path.substring(j + thumbs.length),
-            );
-            if (File(c).existsSync()) return c;
+            for (final base in [scopeDirPath, dir.path]) {
+              final c = p.join(
+                base,
+                'thumbnails',
+                path.substring(j + thumbs.length),
+              );
+              if (File(c).existsSync()) return c;
+            }
           }
           return path;
         }
@@ -452,9 +659,10 @@ class DownloadsStore extends ChangeNotifier {
     _backfilling = true;
     var misses = 0;
     var saved = 0;
+    final startedFor = _scope;
     try {
       for (final v in List<DownloadedVideo>.of(_videos)) {
-        if (_disposed) break;
+        if (_disposed || _switching || _scope != startedFor) break;
         final have = v.thumbnailPath;
         if (have != null && File(have).existsSync()) continue;
         final path = await _saveThumbnail(v.videoId, v.thumbnailUrl);
@@ -534,7 +742,11 @@ class DownloadsStore extends ChangeNotifier {
   Future<Directory> downloadDirectory() async {
     final base =
         _customDir ??
-        p.join((await getApplicationDocumentsDirectory()).path, 'Palm Tunes');
+        p.join(
+          (await getApplicationDocumentsDirectory()).path,
+          'Palm Tunes',
+          _scope ?? 'guest',
+        );
     final d = Directory(base);
     if (!await d.exists()) await d.create(recursive: true);
     return d;
@@ -585,6 +797,12 @@ class DownloadsStore extends ChangeNotifier {
   /// Adds a video to the end of the queue. Returns right away; the queue
   /// downloads one item at a time and reports through the notch.
   Future<String?> startDownload(YtVideo video) async {
+    var waited = 0;
+    while ((_applying || _switching) && waited < 100) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      waited++;
+    }
+    if (_scope == null) return 'Sign in to download songs';
     final queued = _tasks[video.id];
     if (queued != null) {
       if (queued.state == DownloadState.failed) retryDownload(video.id);
@@ -693,7 +911,7 @@ class DownloadsStore extends ChangeNotifier {
   }
 
   void _pump() {
-    if (!_started || _disposed) return;
+    if (!_started || _disposed || _switching || _scope == null) return;
     if (_tasks.values.any((t) => t.state == DownloadState.downloading)) return;
     final next = _tasks.values
         .where((t) => t.state == DownloadState.queued)
@@ -1273,6 +1491,7 @@ class DownloadsStore extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _auth?.removeListener(_onAuth);
     _retryTimer?.cancel();
     // Park running downloads instead of cancelling them, so nothing already
     // downloaded is thrown away.
@@ -1641,8 +1860,9 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                               .playDownloaded(videos, i),
                           onRename: () => _renameSong(v),
                           onDelete: () => _deleteSong(v),
-                          onSearch: () =>
-                              context.read<NavController>().searchFor(v.title),
+                          onSearch: () => context
+                              .read<NavController>()
+                              .searchFor(v.title),
                           onMoveToAll: _selected == null
                               ? null
                               : () => _moveToAll(v),
@@ -2482,6 +2702,7 @@ class _DeleteCategoryDialog extends StatelessWidget {
     );
   }
 }
+
 
 class _Thumb extends StatelessWidget {
   final DownloadedVideo video;
