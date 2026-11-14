@@ -32,6 +32,18 @@ flutter_ios_podfile_setup
 pre_install do |installer|
   Pod::Installer::Xcode::TargetValidator.send(
     :define_method, :verify_no_static_framework_transitive_dependencies) {}
+
+  # MediaPipe's static library already contains its own copies of
+  # GTMSessionFetcher and gRPC's regex code. Building these pods as dynamic
+  # frameworks keeps their copies separate, so the linker no longer sees
+  # the same symbols twice.
+  dynamic_pods = %w[GTMSessionFetcher gRPC-Core gRPC-C++ abseil BoringSSL-GRPC]
+  installer.pod_targets.each do |pod|
+    next unless dynamic_pods.include?(pod.name)
+    def pod.build_type
+      Pod::BuildType.dynamic_framework
+    end
+  end
 end
 
 target 'Runner' do

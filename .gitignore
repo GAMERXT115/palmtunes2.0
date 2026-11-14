@@ -6,6 +6,8 @@
 .DS_Store
 .atom/
 .build/
+/old.ipa
+/palmtunes.ipa
 .buildlog/
 .history
 .svn/
@@ -46,3 +48,5 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+**/build/
