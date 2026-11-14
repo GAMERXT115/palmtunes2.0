@@ -2,13 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.721694096562-7bq0821keas869r4sv28be1kcupht1sj</string>
+				<string>app-1-721694096562-ios-0e344fe72b5e49ef191dab</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSCameraUsageDescription</key>
-    <string>Palm Tunes uses the camera to see your hand gestures. Nothing is recorded or sent anywhere.</string>
+	<string>Palm Tunes uses the camera to see your hand gestures. Nothing is recorded or sent anywhere.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Palm Tunes uses Face ID to unlock the app so you do not have to sign in again.</string>
 
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>audio</string>
-    </array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
