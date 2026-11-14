@@ -16,6 +16,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'audio_handler.dart';
 import 'auth_store.dart';
 import 'bass_meter.dart';
+import 'biometric_lock.dart';
 import 'cloud_sync.dart';
 import 'downloads.dart';
 import 'firebase_options.dart';
@@ -93,6 +94,10 @@ Future<Widget> _boot() async {
     auth.load(),
   ]);
 
+  // Face ID for opening the app (only for signed-in accounts).
+  final biometric = BiometricLock();
+  await biometric.load(auth);
+
   // Keeps downloads and cloud saves in sync (queues while offline).
   final cloud = CloudSyncStore(auth, downloads);
   await cloud.attach();
@@ -108,8 +113,10 @@ Future<Widget> _boot() async {
   final gestures = GestureBridge(hub);
   await gestures.load();
   // The camera stays off on the login and sign-up screens.
-  void syncCamera() => unawaited(gestures.setSuspended(!auth.inApp));
+  void syncCamera() =>
+      unawaited(gestures.setSuspended(!auth.inApp || biometric.locked));
   auth.addListener(syncCamera);
+  biometric.addListener(syncCamera);
   syncCamera();
 
   try {
@@ -133,6 +140,7 @@ Future<Widget> _boot() async {
       ChangeNotifierProvider<DownloadsStore>.value(value: downloads),
       ChangeNotifierProvider<AuthStore>.value(value: auth),
       ChangeNotifierProvider<CloudSyncStore>.value(value: cloud),
+      ChangeNotifierProvider<BiometricLock>.value(value: biometric),
       ChangeNotifierProvider<NavController>(create: (_) => NavController()),
       ChangeNotifierProvider<PlayerHub>.value(value: hub),
       Provider<BassMeter>.value(value: meter),

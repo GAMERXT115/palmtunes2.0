@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'auth_store.dart';
+import 'biometric_lock.dart';
 import 'cloud_sync.dart';
 import 'login_screen.dart';
 import 'player_hub.dart';
@@ -19,6 +20,7 @@ class AccountSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _ProfileCard(),
+        if (auth.isSignedIn) const _BiometricCard(),
         // Google accounts have no password here, so nothing is shown for them.
         if (auth.isSignedIn && auth.hasPassword) const _PasswordCard(),
       ],
@@ -62,6 +64,65 @@ class _Card extends StatelessWidget {
             child,
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The Face ID switch. Turning it on or off asks the phone to confirm first.
+class _BiometricCard extends StatelessWidget {
+  const _BiometricCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final lock = context.watch<BiometricLock>();
+    if (!lock.available) return const SizedBox.shrink();
+    final accent = Theme.of(context).colorScheme.primary;
+    return _Card(
+      icon: Icons.lock_outline_rounded,
+      title: 'Security',
+      child: Row(
+        children: [
+          Icon(lock.icon, size: 22, color: accent),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Unlock with ${lock.label}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  'Ask for it every time the app opens. You stay signed in.',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          Transform.scale(
+            scale: 0.85,
+            child: Switch(
+              value: lock.enabled,
+              activeThumbColor: accent,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              onChanged: (v) async {
+                final ok = await lock.setEnabled(v);
+                if (!ok && context.mounted) {
+                  Notch.show(
+                    '${lock.label} was not confirmed',
+                    icon: Icons.lock_outline_rounded,
+                  );
+                }
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

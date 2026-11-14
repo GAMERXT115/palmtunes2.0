@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import 'auth_config.dart';
 import 'auth_store.dart';
+import 'biometric_lock.dart';
 import 'countries.dart';
 import 'ui.dart';
 
@@ -30,7 +31,9 @@ class AuthGate extends StatelessWidget {
       case AuthStatus.signedIn:
         final p = auth.profile;
         if (p != null && !p.complete) return const CompleteProfileScreen();
-        return child;
+        // Face ID: the app opens only after the phone confirms the owner.
+        if (context.watch<BiometricLock>().locked) return const LockScreen();
+        return FaceIdPromptHost(child: child);
     }
   }
 }
@@ -480,315 +483,322 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-       child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: GlassContainer(
-              borderRadius: 24,
-              padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
-              child: Form(
-                key: _form,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Center(child: _Logo()),
-                    const SizedBox(height: 14),
-                    const Text(
-                      'Palm Tunes',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
-                        letterSpacing: 0.6,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      signUp
-                          ? 'Create your account'
-                          : 'Sign in to keep your songs in the cloud',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    _ModeSwitch(
-                      mode: _mode,
-                      onChanged: _busy ? null : _setMode,
-                    ),
-                    const SizedBox(height: 16),
-                    if (!auth.firebaseOk)
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 12),
-                        child: _ErrorBox(
-                          'Cloud services could not start, so signing in is unavailable. You can still use the app as a guest.',
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: GlassContainer(
+                borderRadius: 24,
+                padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+                child: Form(
+                  key: _form,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Center(child: _Logo()),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'Palm Tunes',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                          letterSpacing: 0.6,
                         ),
                       ),
-                    if (signUp) ...[
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _first,
-                              style: _fieldText,
-                              textInputAction: TextInputAction.next,
-                              textCapitalization: TextCapitalization.words,
-                              decoration: _decoration(context, 'First name'),
-                              validator: (v) => (v ?? '').trim().isEmpty
-                                  ? 'Enter your first name'
-                                  : null,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _last,
-                              style: _fieldText,
-                              textInputAction: TextInputAction.next,
-                              textCapitalization: TextCapitalization.words,
-                              decoration: _decoration(context, 'Last name'),
-                              validator: (v) => (v ?? '').trim().isEmpty
-                                  ? 'Enter your last name'
-                                  : null,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          CountryCodeButton(
-                            country: _country,
-                            onChanged: (c) => setState(() => _country = c),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _phone,
-                              style: _fieldText,
-                              keyboardType: TextInputType.phone,
-                              textInputAction: TextInputAction.next,
-                              decoration: _decoration(context, 'Phone number'),
-                              validator: (v) =>
-                                  validatePhone(_country, v ?? ''),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                    ],
-                    TextFormField(
-                      controller: _email,
-                      style: _fieldText,
-                      keyboardType: TextInputType.emailAddress,
-                      textInputAction: TextInputAction.next,
-                      autofillHints: const [AutofillHints.email],
-                      decoration: _decoration(
-                        context,
-                        'Email',
-                        icon: Icons.mail_outline_rounded,
-                      ),
-                      validator: (v) => _emailRe.hasMatch((v ?? '').trim())
-                          ? null
-                          : 'Enter a valid email address',
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _password,
-                      style: _fieldText,
-                      obscureText: !_showPassword,
-                      textInputAction: signUp
-                          ? TextInputAction.next
-                          : TextInputAction.done,
-                      onFieldSubmitted: (_) {
-                        if (!signUp && !_busy) _submit();
-                      },
-                      decoration: _decoration(
-                        context,
-                        'Password',
-                        icon: Icons.lock_outline_rounded,
-                        suffix: IconButton(
-                          icon: Icon(
-                            _showPassword
-                                ? Icons.visibility_off_rounded
-                                : Icons.visibility_rounded,
-                            size: 18,
-                            color: Colors.white38,
-                          ),
-                          onPressed: () =>
-                              setState(() => _showPassword = !_showPassword),
+                      const SizedBox(height: 4),
+                      Text(
+                        signUp
+                            ? 'Create your account'
+                            : 'Sign in to keep your songs in the cloud',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 13,
                         ),
                       ),
-                      validator: (v) {
-                        final s = v ?? '';
-                        if (s.isEmpty) return 'Enter your password';
-                        if (signUp && s.length < 6) {
-                          return 'Use at least 6 characters';
-                        }
-                        return null;
-                      },
-                    ),
-                    if (signUp) ...[
+                      const SizedBox(height: 18),
+                      _ModeSwitch(
+                        mode: _mode,
+                        onChanged: _busy ? null : _setMode,
+                      ),
+                      const SizedBox(height: 16),
+                      if (!auth.firebaseOk)
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 12),
+                          child: _ErrorBox(
+                            'Cloud services could not start, so signing in is unavailable. You can still use the app as a guest.',
+                          ),
+                        ),
+                      if (signUp) ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextFormField(
+                                controller: _first,
+                                style: _fieldText,
+                                textInputAction: TextInputAction.next,
+                                textCapitalization: TextCapitalization.words,
+                                decoration: _decoration(context, 'First name'),
+                                validator: (v) => (v ?? '').trim().isEmpty
+                                    ? 'Enter your first name'
+                                    : null,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _last,
+                                style: _fieldText,
+                                textInputAction: TextInputAction.next,
+                                textCapitalization: TextCapitalization.words,
+                                decoration: _decoration(context, 'Last name'),
+                                validator: (v) => (v ?? '').trim().isEmpty
+                                    ? 'Enter your last name'
+                                    : null,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            CountryCodeButton(
+                              country: _country,
+                              onChanged: (c) => setState(() => _country = c),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _phone,
+                                style: _fieldText,
+                                keyboardType: TextInputType.phone,
+                                textInputAction: TextInputAction.next,
+                                decoration: _decoration(
+                                  context,
+                                  'Phone number',
+                                ),
+                                validator: (v) =>
+                                    validatePhone(_country, v ?? ''),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      TextFormField(
+                        controller: _email,
+                        style: _fieldText,
+                        keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.next,
+                        autofillHints: const [AutofillHints.email],
+                        decoration: _decoration(
+                          context,
+                          'Email',
+                          icon: Icons.mail_outline_rounded,
+                        ),
+                        validator: (v) => _emailRe.hasMatch((v ?? '').trim())
+                            ? null
+                            : 'Enter a valid email address',
+                      ),
                       const SizedBox(height: 12),
                       TextFormField(
-                        controller: _confirm,
+                        controller: _password,
                         style: _fieldText,
                         obscureText: !_showPassword,
-                        textInputAction: TextInputAction.done,
+                        textInputAction: signUp
+                            ? TextInputAction.next
+                            : TextInputAction.done,
                         onFieldSubmitted: (_) {
-                          if (!_busy) _submit();
+                          if (!signUp && !_busy) _submit();
                         },
                         decoration: _decoration(
                           context,
-                          'Confirm password',
+                          'Password',
                           icon: Icons.lock_outline_rounded,
-                        ),
-                        validator: (v) => v == _password.text
-                            ? null
-                            : 'Passwords do not match',
-                      ),
-                    ] else
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: _busy ? null : _forgot,
-                          child: const Text('Forgot password?'),
-                        ),
-                      ),
-                    if (_error != null) ...[
-                      const SizedBox(height: 8),
-                      _ErrorBox(_error!),
-                    ],
-                    if (_info != null) ...[
-                      const SizedBox(height: 8),
-                      _ErrorBox(_info!, good: true),
-                    ],
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      height: 46,
-                      child: FilledButton(
-                        onPressed: (_busy || !auth.firebaseOk) ? null : _submit,
-                        child: _busy && !_googleBusy
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : Text(signUp ? 'Create account' : 'Sign in'),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Divider(
-                            color: Colors.white.withValues(alpha: 0.1),
+                          suffix: IconButton(
+                            icon: Icon(
+                              _showPassword
+                                  ? Icons.visibility_off_rounded
+                                  : Icons.visibility_rounded,
+                              size: 18,
+                              color: Colors.white38,
+                            ),
+                            onPressed: () =>
+                                setState(() => _showPassword = !_showPassword),
                           ),
                         ),
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 10),
-                          child: Text(
-                            'or',
-                            style: TextStyle(
-                              color: Colors.white38,
-                              fontSize: 12,
+                        validator: (v) {
+                          final s = v ?? '';
+                          if (s.isEmpty) return 'Enter your password';
+                          if (signUp && s.length < 6) {
+                            return 'Use at least 6 characters';
+                          }
+                          return null;
+                        },
+                      ),
+                      if (signUp) ...[
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _confirm,
+                          style: _fieldText,
+                          obscureText: !_showPassword,
+                          textInputAction: TextInputAction.done,
+                          onFieldSubmitted: (_) {
+                            if (!_busy) _submit();
+                          },
+                          decoration: _decoration(
+                            context,
+                            'Confirm password',
+                            icon: Icons.lock_outline_rounded,
+                          ),
+                          validator: (v) => v == _password.text
+                              ? null
+                              : 'Passwords do not match',
+                        ),
+                      ] else
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: _busy ? null : _forgot,
+                            child: const Text('Forgot password?'),
+                          ),
+                        ),
+                      if (_error != null) ...[
+                        const SizedBox(height: 8),
+                        _ErrorBox(_error!),
+                      ],
+                      if (_info != null) ...[
+                        const SizedBox(height: 8),
+                        _ErrorBox(_info!, good: true),
+                      ],
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        height: 46,
+                        child: FilledButton(
+                          onPressed: (_busy || !auth.firebaseOk)
+                              ? null
+                              : _submit,
+                          child: _busy && !_googleBusy
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Text(signUp ? 'Create account' : 'Sign in'),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Divider(
+                              color: Colors.white.withValues(alpha: 0.1),
                             ),
                           ),
-                        ),
-                        Expanded(
-                          child: Divider(
-                            color: Colors.white.withValues(alpha: 0.1),
+                          const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 10),
+                            child: Text(
+                              'or',
+                              style: TextStyle(
+                                color: Colors.white38,
+                                fontSize: 12,
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      height: 46,
-                      child: OutlinedButton(
-                        onPressed: (_busy || !auth.firebaseOk) ? null : _google,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: BorderSide(
-                            color: Colors.white.withValues(alpha: 0.2),
+                          Expanded(
+                            child: Divider(
+                              color: Colors.white.withValues(alpha: 0.1),
+                            ),
                           ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        height: 46,
+                        child: OutlinedButton(
+                          onPressed: (_busy || !auth.firebaseOk)
+                              ? null
+                              : _google,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.2),
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
                           ),
-                        ),
-                        child: _googleBusy
-                            ? Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  const Text('Signing in...'),
-                                ],
-                              )
-                            : Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Container(
-                                    width: 22,
-                                    height: 22,
-                                    alignment: Alignment.center,
-                                    decoration: const BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: Colors.white,
-                                    ),
-                                    child: const Text(
-                                      'G',
-                                      style: TextStyle(
-                                        color: Color(0xFF4285F4),
-                                        fontWeight: FontWeight.w900,
-                                        fontSize: 14,
+                          child: _googleBusy
+                              ? Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  const Text('Continue with Google'),
-                                ],
-                              ),
+                                    const SizedBox(width: 10),
+                                    const Text('Signing in...'),
+                                  ],
+                                )
+                              : Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Container(
+                                      width: 22,
+                                      height: 22,
+                                      alignment: Alignment.center,
+                                      decoration: const BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: Colors.white,
+                                      ),
+                                      child: const Text(
+                                        'G',
+                                        style: TextStyle(
+                                          color: Color(0xFF4285F4),
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    const Text('Continue with Google'),
+                                  ],
+                                ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: _busy
-                          ? null
-                          : () => _run(auth.continueAsGuest),
-                      child: Text(
-                        'Continue as guest',
-                        style: TextStyle(color: accent),
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => _run(auth.continueAsGuest),
+                        child: Text(
+                          'Continue as guest',
+                          style: TextStyle(color: accent),
+                        ),
                       ),
-                    ),
-                    const Text(
-                      'Guests keep everything on this phone. Cloud saves need an account.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white38, fontSize: 11.5),
-                    ),
-                  ],
+                      const Text(
+                        'Guests keep everything on this phone. Cloud saves need an account.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white38, fontSize: 11.5),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
         ),
-       ),
       ),
     );
   }
@@ -908,118 +918,119 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-       child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: GlassContainer(
-              borderRadius: 24,
-              padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
-              child: Form(
-                key: _form,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Center(child: AccountAvatar(profile: p, size: 72)),
-                    const SizedBox(height: 14),
-                    const Text(
-                      'Complete your profile',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: GlassContainer(
+                borderRadius: 24,
+                padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+                child: Form(
+                  key: _form,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Center(child: AccountAvatar(profile: p, size: 72)),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'Complete your profile',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      p?.email ?? '',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 13,
+                      const SizedBox(height: 4),
+                      Text(
+                        p?.email ?? '',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 13,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 18),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            controller: _first,
-                            style: _fieldText,
-                            textCapitalization: TextCapitalization.words,
-                            decoration: _decoration(context, 'First name'),
-                            validator: (v) => (v ?? '').trim().isEmpty
-                                ? 'Enter your first name'
-                                : null,
+                      const SizedBox(height: 18),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _first,
+                              style: _fieldText,
+                              textCapitalization: TextCapitalization.words,
+                              decoration: _decoration(context, 'First name'),
+                              validator: (v) => (v ?? '').trim().isEmpty
+                                  ? 'Enter your first name'
+                                  : null,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextFormField(
-                            controller: _last,
-                            style: _fieldText,
-                            textCapitalization: TextCapitalization.words,
-                            decoration: _decoration(context, 'Last name'),
-                            validator: (v) => (v ?? '').trim().isEmpty
-                                ? 'Enter your last name'
-                                : null,
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _last,
+                              style: _fieldText,
+                              textCapitalization: TextCapitalization.words,
+                              decoration: _decoration(context, 'Last name'),
+                              validator: (v) => (v ?? '').trim().isEmpty
+                                  ? 'Enter your last name'
+                                  : null,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        CountryCodeButton(
-                          country: _country,
-                          onChanged: (c) => setState(() => _country = c),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextFormField(
-                            controller: _phone,
-                            style: _fieldText,
-                            keyboardType: TextInputType.phone,
-                            onFieldSubmitted: (_) => _busy ? null : _save(),
-                            decoration: _decoration(context, 'Phone number'),
-                            validator: (v) => validatePhone(_country, v ?? ''),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 18),
-                    SizedBox(
-                      height: 46,
-                      child: FilledButton(
-                        onPressed: _busy ? null : _save,
-                        child: _busy
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Save and continue'),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 6),
-                    TextButton(
-                      onPressed: _busy ? null : auth.signOut,
-                      child: const Text('Use a different account'),
-                    ),
-                  ],
+                      const SizedBox(height: 12),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CountryCodeButton(
+                            country: _country,
+                            onChanged: (c) => setState(() => _country = c),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _phone,
+                              style: _fieldText,
+                              keyboardType: TextInputType.phone,
+                              onFieldSubmitted: (_) => _busy ? null : _save(),
+                              decoration: _decoration(context, 'Phone number'),
+                              validator: (v) =>
+                                  validatePhone(_country, v ?? ''),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        height: 46,
+                        child: FilledButton(
+                          onPressed: _busy ? null : _save,
+                          child: _busy
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Save and continue'),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      TextButton(
+                        onPressed: _busy ? null : auth.signOut,
+                        child: const Text('Use a different account'),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
         ),
-       ),
       ),
     );
   }

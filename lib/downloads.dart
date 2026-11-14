@@ -1296,7 +1296,7 @@ class DownloadsScreen extends StatefulWidget {
 }
 
 class _DownloadsScreenState extends State<DownloadsScreen> {
-  static const double _fade = 16;
+  static const double _fade = 10;
 
   String? _selected;
   bool _queueOpen = true;
@@ -1641,9 +1641,8 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                               .playDownloaded(videos, i),
                           onRename: () => _renameSong(v),
                           onDelete: () => _deleteSong(v),
-                          onSearch: () => context
-                              .read<NavController>()
-                              .searchFor(v.title),
+                          onSearch: () =>
+                              context.read<NavController>().searchFor(v.title),
                           onMoveToAll: _selected == null
                               ? null
                               : () => _moveToAll(v),
@@ -1667,7 +1666,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
       builder: (context, dragging, _) => GlassContainer(
         borderRadius: 18,
         opacity: 0.12,
-        padding: const EdgeInsets.fromLTRB(10, 0, 0, 0),
+        padding: const EdgeInsets.fromLTRB(8, 0, 0, 0),
         borderColor: dragging ? accent.withValues(alpha: 0.6) : null,
         child: SizedBox(
           height: _FolderTile.height + 16,
@@ -1681,10 +1680,10 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                     .read<PlayerHub>()
                     .playDownloadedShuffled(store.videosIn(null)),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               Container(
                 width: 1,
-                height: 56,
+                height: 44,
                 color: accent.withValues(alpha: 0.25),
               ),
               Expanded(
@@ -1713,7 +1712,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                     children: [
                       for (final c in store.categories)
                         Padding(
-                          padding: const EdgeInsets.only(right: 10),
+                          padding: const EdgeInsets.only(right: 8),
                           child: _CategoryChip(
                             key: ValueKey(c.id),
                             category: c,
@@ -2484,7 +2483,6 @@ class _DeleteCategoryDialog extends StatelessWidget {
   }
 }
 
-
 class _Thumb extends StatelessWidget {
   final DownloadedVideo video;
   final double width;
@@ -2558,8 +2556,8 @@ class _RowIcon extends StatelessWidget {
 /// A playlist tile: icon, name (always two lines tall so every tile matches)
 /// and the number of songs inside.
 class _FolderTile extends StatelessWidget {
-  static const double width = 112;
-  static const double height = 94;
+  static const double width = 78;
+  static const double height = 72;
 
   final String label;
   final int count;
@@ -2591,7 +2589,7 @@ class _FolderTile extends StatelessWidget {
       scale: hovering ? 1.15 : 1,
       child: Icon(
         selected ? selectedIcon : icon,
-        size: 26,
+        size: 20,
         color: active ? accent : accent.withValues(alpha: 0.75),
       ),
     );
@@ -2601,7 +2599,7 @@ class _FolderTile extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       onTap: tap,
       child: Container(
-        padding: const EdgeInsets.all(3),
+        padding: const EdgeInsets.all(2),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: accent.withValues(alpha: hovering ? 0.30 : 0.18),
@@ -2635,7 +2633,7 @@ class _FolderTile extends StatelessWidget {
       width: width,
       height: height,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         color: ghost ? const Color(0xFF231417) : null,
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -2658,15 +2656,15 @@ class _FolderTile extends StatelessWidget {
         children: [
           Positioned.fill(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 5),
               child: Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _iconWidget(accent, active),
-                    const SizedBox(height: 5),
+                    const SizedBox(height: 2),
                     SizedBox(
-                      height: 31,
+                      height: 26,
                       child: Center(
                         child: Text(
                           label,
@@ -2676,8 +2674,8 @@ class _FolderTile extends StatelessWidget {
                           style: TextStyle(
                             color: active ? Colors.white : Colors.white70,
                             fontWeight: FontWeight.w700,
-                            fontSize: 12.5,
-                            height: 1.2,
+                            fontSize: 11,
+                            height: 1.15,
                             decoration: TextDecoration.none,
                           ),
                         ),
@@ -2689,8 +2687,8 @@ class _FolderTile extends StatelessWidget {
                       maxLines: 1,
                       style: TextStyle(
                         color: active ? Colors.white70 : Colors.white38,
-                        fontSize: 10.5,
-                        height: 1.2,
+                        fontSize: 9.5,
+                        height: 1.1,
                         fontWeight: FontWeight.w500,
                         decoration: TextDecoration.none,
                       ),
@@ -2809,14 +2807,14 @@ class _CategoryChip extends StatelessWidget {
                   behavior: HitTestBehavior.opaque,
                   onTap: onMenu,
                   child: Container(
-                    padding: const EdgeInsets.all(3),
+                    padding: const EdgeInsets.all(2),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: Colors.black.withValues(alpha: 0.3),
                     ),
                     child: const Icon(
                       Icons.more_horiz_rounded,
-                      size: 14,
+                      size: 12,
                       color: Colors.white,
                     ),
                   ),
@@ -2867,7 +2865,7 @@ class _NewCategoryButton extends StatelessWidget {
         width: _FolderTile.width,
         height: _FolderTile.height,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(14),
           color: accent.withValues(alpha: 0.04),
           border: Border.all(color: accent.withValues(alpha: 0.35), width: 1.2),
         ),
@@ -2875,14 +2873,16 @@ class _NewCategoryButton extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.playlist_add_rounded, size: 26, color: accent),
-              const SizedBox(height: 5),
+              Icon(Icons.playlist_add_rounded, size: 20, color: accent),
+              const SizedBox(height: 3),
               Text(
-                'New playlist',
+                'New\nplaylist',
+                textAlign: TextAlign.center,
                 style: TextStyle(
                   color: accent,
                   fontWeight: FontWeight.w700,
-                  fontSize: 12,
+                  fontSize: 11,
+                  height: 1.15,
                 ),
               ),
             ],
