@@ -76,3 +76,4 @@ flutter:
     - assets/legal/
     - assets/logo.png
     - assets/hand_landmarker.task
+    - assets/intro.mp3

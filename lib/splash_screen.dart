@@ -2,21 +2,100 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
+
 import 'ui.dart';
+
+/// One beat of the intro music: when it lands (seconds from the start of
+/// assets/intro.mp3) and how hard it hits.
+class _Hit {
+  final double t;
+  final double power;
+  const _Hit(this.t, [this.power = 1]);
+}
+
+/// The beat map of assets/intro.mp3 (130 BPM, music runs to ~5.7 s, then a
+/// quiet bell ring-out). Measured from the audio itself, so the splash is
+/// drawn from these times instead of from guesses. Keep the lists sorted.
+class _IntroScore {
+  _IntroScore._();
+
+  /// Seconds the pictures are held back. The speaker is a little behind the
+  /// clock, so a small positive value makes the flash land with the sound.
+  /// Raise it if things flash BEFORE you hear them, lower it (even below 0)
+  /// if they flash after. Bluetooth headphones need a much larger value.
+  static const double visualDelay = 0.06;
+
+  /// Kick / sub-bass thumps (and the little drum roll at 1.5-1.85 s).
+  static const List<_Hit> bass = [
+    _Hit(0.49, 0.7),
+    _Hit(0.95, 0.8),
+    _Hit(1.30, 0.8),
+    _Hit(1.50, 0.4),
+    _Hit(1.63, 0.6),
+    _Hit(1.74, 0.5),
+    _Hit(1.85, 0.9),
+    _Hit(3.29, 1.0),
+    _Hit(3.64, 0.8),
+  ];
+
+  /// The plucked bell hits.
+  static const List<_Hit> bells = [
+    _Hit(0.93, 0.8),
+    _Hit(2.30, 1.0),
+    _Hit(3.23, 1.0),
+    _Hit(3.70, 0.6),
+    _Hit(4.16, 1.0),
+  ];
+
+  /// Stretches where the bass note climbs (D3 / E3 over the B2 / C3 root).
+  static const List<(double, double)> lifts = [
+    (0.50, 1.45),
+    (2.10, 2.60),
+    (4.00, 4.45),
+  ];
+
+  /// The text, ring and sparks start collapsing on this kick...
+  static const double collapseAt = 3.29;
+
+  /// ...and the logo zooms open where the last bass lift ends, so the app is
+  /// fully revealed over the closing hits at 5.1 - 5.5 s.
+  static const double zoomAt = 4.46;
+
+  /// 0..1 punch of the most recent hit, falling off over about [decay] seconds.
+  static double pulse(List<_Hit> hits, double t, double decay) {
+    var v = 0.0;
+    for (final h in hits) {
+      final age = t - h.t;
+      if (age < 0) break;
+      v = max(v, h.power * exp(-age / decay));
+    }
+    return v;
+  }
+
+  /// 0..1, smoothly up while the bass note is lifted.
+  static double lift(double t) {
+    var v = 0.0;
+    for (final (a, b) in lifts) {
+      final up = Curves.easeInOut.transform(((t - a) / 0.12).clamp(0.0, 1.0));
+      final down = Curves.easeInOut.transform(((b - t) / 0.20).clamp(0.0, 1.0));
+      v = max(v, min(up, down));
+    }
+    return v;
+  }
+}
 
 /// Shows the splash while [boot] loads the app, then the logo zooms in until
 /// it is off screen and the app shows through it.
+///
+/// The whole thing is played to assets/intro.mp3: the logo punches and sends
+/// out a ring on every kick, the bells throw sparks, and the zoom into the
+/// app is timed to the closing hits (see [_IntroScore]).
 class SplashLauncher extends StatefulWidget {
   final Color accent;
   final Future<Widget> Function() boot;
-  final Duration minDuration;
 
-  const SplashLauncher({
-    super.key,
-    required this.accent,
-    required this.boot,
-    this.minDuration = const Duration(milliseconds: 3600),
-  });
+  const SplashLauncher({super.key, required this.accent, required this.boot});
 
   @override
   State<SplashLauncher> createState() => _SplashLauncherState();
@@ -34,49 +113,17 @@ class _SplashLauncherState extends State<SplashLauncher>
   static const Alignment _zoomAnchor = Alignment(0, -0.2);
   // Alpha from brightness: ~white => 1, the red/dark parts => 0.
   static const ColorFilter _whiteMask = ColorFilter.matrix(<double>[
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    1.5,
-    2.95,
-    0.55,
-    0,
-    -918,
+    1, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0, //
+    0, 0, 1, 0, 0, //
+    1.5, 2.95, 0.55, 0, -918,
   ]);
   // The opposite: everything except the white.
   static const ColorFilter _notWhiteMask = ColorFilter.matrix(<double>[
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    -1.5,
-    -2.95,
-    -0.55,
-    0,
-    1173,
+    1, 0, 0, 0, 0, //
+    0, 1, 0, 0, 0, //
+    0, 0, 1, 0, 0, //
+    -1.5, -2.95, -0.55, 0, 1173,
   ]);
 
   // Intro (logo spins and bounces in, then the title and subtitle).
@@ -124,26 +171,28 @@ class _SplashLauncherState extends State<SplashLauncher>
           curve: const Interval(0.0, 0.5, curve: Curves.easeInOutBack),
         ),
       );
+  // The title lands as the drum roll ends (~1.85 s of the music).
   late final Animation<double> _titleOpacity = CurvedAnimation(
     parent: _main,
-    curve: const Interval(0.5, 0.7, curve: Curves.easeIn),
+    curve: const Interval(0.5, 0.64, curve: Curves.easeIn),
   );
   late final Animation<Offset> _titleSlide =
       Tween<Offset>(begin: const Offset(0, 0.5), end: Offset.zero).animate(
         CurvedAnimation(
           parent: _main,
-          curve: const Interval(0.5, 0.8, curve: Curves.easeOutCubic),
+          curve: const Interval(0.5, 0.66, curve: Curves.easeOutCubic),
         ),
       );
+  // The subtitle arrives with the first full bell hit (2.30 s).
   late final Animation<double> _subtitleOpacity = CurvedAnimation(
     parent: _main,
-    curve: const Interval(0.7, 0.9, curve: Curves.easeIn),
+    curve: const Interval(0.77, 0.9, curve: Curves.easeIn),
   );
   late final Animation<Offset> _subtitleSlide =
       Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero).animate(
         CurvedAnimation(
           parent: _main,
-          curve: const Interval(0.7, 1.0, curve: Curves.easeOutCubic),
+          curve: const Interval(0.77, 1.0, curve: Curves.easeOutCubic),
         ),
       );
   late final Animation<double> _glow = Tween<double>(
@@ -151,14 +200,18 @@ class _SplashLauncherState extends State<SplashLauncher>
     end: 1.5,
   ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
   late final Animation<double> _bounce = Tween<double>(
-    begin: -10,
-    end: 10,
+    begin: -6,
+    end: 6,
   ).animate(CurvedAnimation(parent: _wave, curve: Curves.easeInOut));
 
   Color get _primary => widget.accent;
   Color get _light => Color.lerp(widget.accent, Colors.white, 0.45)!;
-  Color get _dark => Color.lerp(widget.accent, Colors.black, 0.5)!;
   Color get _soft => Color.lerp(widget.accent, Colors.white, 0.75)!;
+
+  /// Runs from the moment the music starts; everything that follows the beat
+  /// reads its time from here (see [_now]).
+  final Stopwatch _clock = Stopwatch();
+  Player? _audio;
 
   Widget? _app;
   bool _done = false;
@@ -168,15 +221,16 @@ class _SplashLauncherState extends State<SplashLauncher>
   @override
   void initState() {
     super.initState();
-    _main.forward();
-    _welding.repeat();
     _pulse.repeat(reverse: true);
     _wave.repeat(reverse: true);
+    unawaited(_startIntro());
     unawaited(_run());
   }
 
   @override
   void dispose() {
+    _clock.stop();
+    unawaited(_releaseAudio());
     _main.dispose();
     _welding.dispose();
     _pulse.dispose();
@@ -186,12 +240,61 @@ class _SplashLauncherState extends State<SplashLauncher>
     super.dispose();
   }
 
+  /// Seconds of music played so far (0 until it starts).
+  double get _now => _clock.isRunning
+      ? _clock.elapsedMicroseconds / 1e6 - _IntroScore.visualDelay
+      : 0;
+
+  Future<void> _waitUntil(double seconds) async {
+    while (mounted && _now < seconds) {
+      await Future<void>.delayed(const Duration(milliseconds: 8));
+    }
+  }
+
+  /// Loads the music first, then starts the music, the clock and the pictures
+  /// in the same instant. If the music cannot be loaded the splash still
+  /// plays, just silently, on the same clock.
+  Future<void> _startIntro() async {
+    Player? audio;
+    try {
+      audio = Player();
+      _audio = audio;
+      await audio
+          .open(Media('asset:///assets/intro.mp3'), play: false)
+          .timeout(const Duration(seconds: 2));
+      unawaited(
+        audio.stream.completed
+            .firstWhere((done) => done, orElse: () => false)
+            .then((_) => _releaseAudio()),
+      );
+    } catch (e) {
+      debugPrint('[PalmTunes] Intro music not loaded -> $e');
+      unawaited(_releaseAudio());
+      audio = null;
+    }
+    if (!mounted) return;
+    try {
+      await audio?.play();
+    } catch (_) {}
+    _clock.start();
+    _main.forward();
+    _welding.repeat();
+  }
+
+  Future<void> _releaseAudio() async {
+    final a = _audio;
+    _audio = null;
+    try {
+      await a?.dispose();
+    } catch (_) {}
+  }
+
   Future<void> _run() async {
-    final started = DateTime.now();
     try {
       final app = await widget.boot();
-      final left = widget.minDuration - DateTime.now().difference(started);
-      if (left > Duration.zero) await Future<void>.delayed(left);
+      // Hold until the music reaches the kick the collapse is timed to. If
+      // the app loaded slowly this returns at once and it just goes ahead.
+      await _waitUntil(_IntroScore.collapseAt);
       if (!mounted) return;
       await _transition(app);
     } catch (e, st) {
@@ -201,22 +304,27 @@ class _SplashLauncherState extends State<SplashLauncher>
   }
 
   Future<void> _fail(Object e) async {
+    unawaited(_releaseAudio());
     if (mounted) setState(() => _error = e);
   }
 
   Future<void> _transition(Widget app) async {
-    // 1. Text, ring and sparks fade out and the logo settles in the middle.
+    // 1. On the kick: text, ring and sparks fade out and the logo settles in
+    // the middle.
     await _card.forward();
     if (!mounted) return;
 
-    // 2. The app is mounted but hidden until the zoom starts.
+    // 2. The app is mounted but hidden until the zoom starts. The logo keeps
+    // pulsing to the bass and the bells while it waits.
     setState(() => _app = app);
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
 
-    // 3. The logo zooms in until it is off screen. The app is only visible
-    // inside the growing logo (and through its palm tree), so it is revealed
-    // by the zoom itself, with nothing else drawn behind.
+    // 3. On the beat the logo zooms in until it is off screen. The app is
+    // only visible inside the growing logo (and through its palm tree), so it
+    // is revealed by the zoom itself, with nothing else drawn behind.
+    await _waitUntil(_IntroScore.zoomAt);
+    if (!mounted) return;
     setState(() => _zooming = true);
     await _reveal.forward();
     if (!mounted) return;
@@ -226,7 +334,7 @@ class _SplashLauncherState extends State<SplashLauncher>
   double _zoomScale(double t) =>
       0.88 * pow(_zoomMax / 0.88, Curves.easeInQuad.transform(t)).toDouble();
 
-  /// The part of the window where the app is visible: the logo's disc while it
+  /// The part of the screen where the app is visible: the logo's disc while it
   /// grows, then everything.
   Path _portal(Size size) {
     if (_done) return Path()..addRect(Offset.zero & size);
@@ -260,7 +368,7 @@ class _SplashLauncherState extends State<SplashLauncher>
   Widget _zoomLayer() {
     final t = _reveal.value;
     final scale = _zoomScale(t);
-    // The disc only fades once it is bigger than the window, so what is left
+    // The disc only fades once it is bigger than the screen, so what is left
     // is the app.
     final fade =
         1 - Curves.easeIn.transform(((t - 0.80) / 0.20).clamp(0.0, 1.0));
@@ -320,11 +428,33 @@ class _SplashLauncherState extends State<SplashLauncher>
             final a = Curves.easeInOutCubic.transform(_card.value);
             final rest = (1 - a).clamp(0.0, 1.0);
 
+            // What the music is doing right now.
+            final now = _now;
+            final bass = _IntroScore.pulse(_IntroScore.bass, now, 0.16);
+            final bell = _IntroScore.pulse(_IntroScore.bells, now, 0.28);
+            final lift = _IntroScore.lift(now);
+            final glowBoost = min(1.2, max(bass, 0.8 * bell) + 0.25 * lift);
+
             final home = Offset(w / 2, h * 0.40);
             final logoC = Offset.lerp(home, Offset(w / 2, h / 2), a)!;
             return Stack(
               fit: StackFit.expand,
               children: [
+                // Kick rings and bell sparks, behind everything else.
+                IgnorePointer(
+                  child: RepaintBoundary(
+                    child: CustomPaint(
+                      size: Size.infinite,
+                      painter: _BeatPainter(
+                        t: now,
+                        center: logoC,
+                        radius: _ringSize / 2,
+                        color: _light,
+                        fade: 0.4 + 0.6 * _fadeIn.value,
+                      ),
+                    ),
+                  ),
+                ),
                 // Title and subtitle under the logo.
                 Positioned(
                   left: 0,
@@ -379,30 +509,39 @@ class _SplashLauncherState extends State<SplashLauncher>
                     ),
                   ),
                 ),
-                // Logo with the welding ring: spins in, then bobs.
+                // Logo with the welding ring: spins in, bobs, and jumps and
+                // swells on every kick.
                 Positioned(
                   left: logoC.dx - _ringSize / 2,
                   top: logoC.dy - _ringSize / 2,
                   width: _ringSize,
                   height: _ringSize,
                   child: Transform.translate(
-                    offset: Offset(0, _bounce.value * rest),
+                    offset: Offset(0, _bounce.value * rest - 7 * bass),
                     child: FadeTransition(
                       opacity: _fadeIn,
                       child: Transform.scale(
-                        scale: _scaleAnim.value * (1 - 0.12 * a),
+                        scale:
+                            _scaleAnim.value *
+                            (1 - 0.12 * a) *
+                            (1 + 0.10 * bass),
                         child: Transform.rotate(
                           angle: _rotation.value,
                           child: Stack(
                             alignment: Alignment.center,
                             clipBehavior: Clip.none,
                             children: [
-                              _logo(rest),
+                              _logo(rest, glowBoost),
                               CustomPaint(
                                 size: const Size(_ringSize, _ringSize),
                                 painter: _WeldingRingPainter(
                                   t: _welding.value,
-                                  color: _light.withValues(alpha: 0.6 * rest),
+                                  // The ring flares on every bell.
+                                  color: _light.withValues(
+                                    alpha:
+                                        (0.6 + 0.4 * bell).clamp(0.0, 1.0) *
+                                        rest,
+                                  ),
                                 ),
                               ),
                             ],
@@ -412,7 +551,8 @@ class _SplashLauncherState extends State<SplashLauncher>
                     ),
                   ),
                 ),
-                // Sparks flying out of the logo.
+                // Ambient sparks flying out of the logo (kept calm so the
+                // beat-driven effects stand out).
                 IgnorePointer(
                   child: RepaintBoundary(
                     child: CustomPaint(
@@ -421,7 +561,7 @@ class _SplashLauncherState extends State<SplashLauncher>
                         t: _welding.value,
                         center: logoC,
                         color: _light,
-                        fade: rest * _fadeIn.value,
+                        fade: rest * _fadeIn.value * 0.55,
                       ),
                     ),
                   ),
@@ -434,7 +574,7 @@ class _SplashLauncherState extends State<SplashLauncher>
     );
   }
 
-  Widget _logo(double fade) {
+  Widget _logo(double fade, double boost) {
     return Container(
       width: _logoSize,
       height: _logoSize,
@@ -442,9 +582,11 @@ class _SplashLauncherState extends State<SplashLauncher>
         shape: BoxShape.circle,
         boxShadow: [
           BoxShadow(
-            color: _primary.withValues(alpha: 0.5 * _glow.value * fade),
-            blurRadius: 30 * _glow.value,
-            spreadRadius: 5 * _glow.value,
+            color: _primary.withValues(
+              alpha: (0.5 * _glow.value * fade + 0.45 * boost).clamp(0.0, 1.0),
+            ),
+            blurRadius: 30 * _glow.value + 22 * boost,
+            spreadRadius: 5 * _glow.value + 7 * boost,
           ),
         ],
       ),
@@ -569,6 +711,100 @@ class _WeldingRingPainter extends CustomPainter {
   @override
   bool shouldRepaint(_WeldingRingPainter old) =>
       old.t != t || old.color != color;
+}
+
+/// The effects that follow the music: a ring leaves the logo on every kick
+/// and a burst of sparks flies out on every bell. [t] is the time of the music
+/// in seconds, the hits come from [_IntroScore]. Rings and bursts are shrunk
+/// to fit when the screen is narrow, so a phone never clips them.
+class _BeatPainter extends CustomPainter {
+  final double t;
+  final Offset center;
+  final double radius;
+  final Color color;
+  final double fade;
+
+  const _BeatPainter({
+    required this.t,
+    required this.center,
+    required this.radius,
+    required this.color,
+    required this.fade,
+  });
+
+  static const double _ringLife = 0.7;
+  static const double _burstLife = 1.0;
+
+  // One fixed burst of sparks per bell, so it looks the same every launch.
+  static final List<List<_SparkParticle>> _bursts = List.generate(
+    _IntroScore.bells.length,
+    (i) {
+      final r = Random(40 + i);
+      return List.generate(
+        20,
+        (_) => _SparkParticle(
+          r.nextDouble() * 2 * pi,
+          r.nextDouble() * 2 + 1,
+          r.nextDouble(),
+          r.nextDouble() * 1.6 + 1.2,
+        ),
+      );
+    },
+  );
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (fade <= 0) return;
+
+    // How far the effects may travel before they would leave a narrow screen.
+    final room = max(30.0, size.width / 2 - radius - 6);
+
+    // Bass: a ring grows out of the logo and fades.
+    final ring = Paint()..style = PaintingStyle.stroke;
+    for (final h in _IntroScore.bass) {
+      final age = t - h.t;
+      if (age < 0) break;
+      if (age > _ringLife) continue;
+      final k = age / _ringLife;
+      final power = h.power.clamp(0.0, 1.0);
+      ring
+        ..strokeWidth = 1 + 3.5 * (1 - k)
+        ..color = color.withValues(
+          alpha: ((1 - k) * 0.6 * power * fade).clamp(0.0, 1.0),
+        );
+      canvas.drawCircle(
+        center,
+        radius + Curves.easeOutCubic.transform(k) * min(60 + 70 * power, room),
+        ring,
+      );
+    }
+
+    // Bells: a burst of twinkling sparks.
+    final fit = min(1.0, room / 165);
+    final dot = Paint()..style = PaintingStyle.fill;
+    for (var i = 0; i < _IntroScore.bells.length; i++) {
+      final h = _IntroScore.bells[i];
+      final age = t - h.t;
+      if (age < 0) break;
+      if (age > _burstLife) continue;
+      final k = age / _burstLife;
+      final out = Curves.easeOutCubic.transform(k);
+      final power = h.power.clamp(0.0, 1.0);
+      for (final p in _bursts[i]) {
+        final d = radius + out * (50 + p.speed * 38) * fit;
+        final pos = center + Offset(cos(p.angle), sin(p.angle)) * d;
+        final twinkle = 0.65 + 0.35 * sin(age * 38 + p.offset * 2 * pi);
+        dot.color = color.withValues(
+          alpha: ((1 - k) * twinkle * power * fade).clamp(0.0, 1.0),
+        );
+        canvas.drawCircle(pos, p.size * (1 - 0.55 * k), dot);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_BeatPainter old) =>
+      old.t != t || old.center != center || old.fade != fade;
 }
 
 /// Small sparks that fly out of the logo and fade away.
