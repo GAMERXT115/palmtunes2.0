@@ -77,6 +77,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   Timer? _hideTimer;
   bool _panelOpen = false;
 
+  // Portrait: the buttons on top of the picture show and hide on tap.
+  bool _pControls = true;
+  Timer? _pHideTimer;
+  bool _wasFull = false;
+
   _SeekBubble? _bubble;
   Timer? _bubbleTimer;
   _HoldMode _hold = _HoldMode.none;
@@ -106,6 +111,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _hub.addListener(_onHub);
     _onHub();
     _scheduleHide();
+    _schedulePortraitHide();
     _pip.start();
   }
 
@@ -113,6 +119,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void dispose() {
     _hub.removeListener(_onHub);
     _hideTimer?.cancel();
+    _pHideTimer?.cancel();
     _bubbleTimer?.cancel();
     _reverseTimer?.cancel();
     _snap.dispose();
@@ -124,6 +131,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _onHub() {
     WakelockPlus.toggle(enable: _hub.isPlaying);
+    if (_hub.isFullscreen != _wasFull) {
+      _wasFull = _hub.isFullscreen;
+      if (!_wasFull && mounted) {
+        // Back in portrait: show the buttons again.
+        _pControls = true;
+        _schedulePortraitHide();
+      }
+    }
     if (_hub.current == null && !_popping && mounted) {
       _popping = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -157,6 +172,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     });
   }
 
+  void _schedulePortraitHide() {
+    _pHideTimer?.cancel();
+    _pHideTimer = Timer(_hideDelay, () {
+      if (mounted && !_hub.isFullscreen && _hub.isPlaying && _pControls) {
+        setState(() => _pControls = false);
+      }
+    });
+  }
+
   void _onTap() {
     if (_panelOpen) {
       setState(() => _panelOpen = false);
@@ -169,8 +193,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       } else {
         _showControls();
       }
+    } else if (_pControls) {
+      _pHideTimer?.cancel();
+      setState(() => _pControls = false);
     } else {
-      _hub.togglePlay();
+      setState(() => _pControls = true);
+      _schedulePortraitHide();
     }
   }
 
@@ -252,21 +280,83 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (mounted) Navigator.of(context).maybePop();
   }
 
-  // ---- swipe down to close ------------------------------------------------------
+  // ---- swipe on the picture ------------------------------------------------------
+  // Portrait: drag the picture down to close the player into the mini player,
+  // swipe it up to go fullscreen. Fullscreen: swipe down to go back to
+  // portrait. A Listener is used so this never fights the tap, double-tap,
+  // hold and circle gestures on the picture.
 
-  void _dismissStart(DragStartDetails _) => _snap.stop();
+  int? _swipePointer;
+  Offset _swipeSum = Offset.zero;
+  int _swipeMode = 0; // 0 undecided, 1 vertical swipe, 2 not a swipe
+  DateTime _swipeTime = DateTime.now();
+  double _swipeVy = 0;
 
-  void _dismissUpdate(DragUpdateDetails d) {
-    if (_hub.isFullscreen) return;
-    setState(() => _dragDy = math.max(0.0, _dragDy + d.delta.dy));
+  void _swipeDown(PointerDownEvent e) {
+    _swipePointer = e.pointer;
+    _swipeSum = Offset.zero;
+    _swipeMode = _hold == _HoldMode.none ? 0 : 2;
+    _swipeVy = 0;
+    _swipeTime = DateTime.now();
+    _snap.stop();
   }
 
-  void _dismissEnd(DragEndDetails d) {
-    if (_hub.isFullscreen) return;
-    final v = d.primaryVelocity ?? 0;
+  void _swipeMove(PointerMoveEvent e) {
+    if (e.pointer != _swipePointer || _swipeMode == 2) return;
+    if (_hold != _HoldMode.none) {
+      _swipeMode = 2;
+      return;
+    }
+    _swipeSum += e.delta;
+    final now = DateTime.now();
+    final dt = now.difference(_swipeTime).inMicroseconds / 1e6;
+    if (dt > 0) _swipeVy = _swipeVy * 0.6 + (e.delta.dy / dt) * 0.4;
+    _swipeTime = now;
+    if (_swipeMode == 0) {
+      final ax = _swipeSum.dx.abs();
+      final ay = _swipeSum.dy.abs();
+      if (ax < 14 && ay < 14) return;
+      _swipeMode = ay > ax * 1.5 ? 1 : 2;
+      if (_swipeMode == 2) return;
+    }
+    if (_hub.isFullscreen) {
+      if (_swipeSum.dy > 70) {
+        _swipePointer = null;
+        _swipeMode = 2;
+        _hub.setFullscreen(false);
+      }
+    } else if (_swipeSum.dy < -70) {
+      _swipePointer = null;
+      _swipeMode = 2;
+      if (_dragDy != 0) setState(() => _dragDy = 0);
+      _hub.setFullscreen(true);
+    } else {
+      setState(() => _dragDy = math.max(0.0, _swipeSum.dy));
+    }
+  }
+
+  void _swipeUp(PointerUpEvent e) {
+    if (e.pointer != _swipePointer) return;
+    final dragging = _swipeMode == 1 && !_hub.isFullscreen;
+    _swipePointer = null;
+    _swipeMode = 0;
+    if (!dragging) return;
+    final stale = DateTime.now().difference(_swipeTime).inMilliseconds > 120;
+    final v = stale ? 0.0 : _swipeVy;
     if (_dragDy > 130 || v > 800) {
       Navigator.of(context).maybePop();
     } else {
+      _snapFrom = _dragDy;
+      _snap.forward(from: 0);
+    }
+  }
+
+  void _swipeCancel(PointerCancelEvent e) {
+    if (e.pointer != _swipePointer) return;
+    final dragging = _swipeMode == 1 && !_hub.isFullscreen;
+    _swipePointer = null;
+    _swipeMode = 0;
+    if (dragging) {
       _snapFrom = _dragDy;
       _snap.forward(from: 0);
     }
@@ -317,82 +407,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             ),
           ),
         ),
-        SafeArea(
-          child: Column(
-            children: [
-              // The top bar and the picture stay put; dragging them down closes
-              // the player.
-              Column(
-                children: [
-                  GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onVerticalDragStart: _dismissStart,
-                    onVerticalDragUpdate: _dismissUpdate,
-                    onVerticalDragEnd: _dismissEnd,
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(6, 4, 6, 0),
-                          child: Row(
-                            children: [
-                              IconButton(
-                                onPressed: _close,
-                                icon: const Icon(
-                                  Icons.keyboard_arrow_down_rounded,
-                                  size: 32,
-                                ),
-                                color: Colors.white,
-                              ),
-                              const Expanded(
-                                child: Text(
-                                  'Now Playing',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: 0.4,
-                                    fontSize: 13.5,
-                                  ),
-                                ),
-                              ),
-                              SizedBox(
-                                width: 48,
-                                child: item.localPath == null
-                                    ? DownloadButton(
-                                        video: YtVideo(
-                                          id: item.videoId,
-                                          title: item.title,
-                                          author: item.author,
-                                          duration: item.duration,
-                                          thumbnailUrl: item.thumbnailUrl,
-                                        ),
-                                        size: 48,
-                                      )
-                                    : const Icon(
-                                        Icons.download_done_rounded,
-                                        color: AppColors.success,
-                                      ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: AspectRatio(
-                        aspectRatio: 16 / 9,
-                        child: _surface(hub, item),
-                      ),
-                    ),
-                  ),
-                ],
+        Column(
+          children: [
+            // The picture runs edge to edge from the very top of the screen.
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(20),
               ),
-              // Everything below scrolls underneath the picture.
-              Expanded(
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: _surface(hub, item),
+              ),
+            ),
+            // Everything below scrolls underneath the picture.
+            Expanded(
+              child: SafeArea(
+                top: false,
                 child: ListView(
                   physics: const ClampingScrollPhysics(),
                   padding: const EdgeInsets.fromLTRB(0, 8, 0, 30),
@@ -438,7 +468,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       ),
                     ),
                     const SizedBox(height: 10),
-                    _SeekBar(hub: hub, item: item, horizontalPadding: 14),
+                    _SeekBar(
+                      hub: hub,
+                      item: item,
+                      horizontalPadding: 14,
+                      showPreview: false,
+                    ),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 22),
                       child: _controls(hub),
@@ -448,10 +483,92 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   ],
                 ),
               ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Back arrow, download state and fullscreen, drawn on top of the picture.
+  /// Tapping the picture shows or hides them (it no longer pauses).
+  Widget _portraitOverlay(PlayerHub hub, PlayItem item) {
+    final top = MediaQuery.paddingOf(context).top;
+    return Positioned.fill(
+      child: IgnorePointer(
+        ignoring: !_pControls,
+        child: AnimatedOpacity(
+          opacity: _pControls ? 1 : 0,
+          duration: const Duration(milliseconds: 200),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              const IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black54,
+                        Colors.transparent,
+                        Colors.transparent,
+                        Colors.black54,
+                      ],
+                      stops: [0, 0.4, 0.65, 1],
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                top: top,
+                left: 4,
+                right: 4,
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: _close,
+                      icon: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 32,
+                      ),
+                      color: Colors.white,
+                    ),
+                    const Spacer(),
+                    SizedBox(
+                      width: 48,
+                      child: item.localPath == null
+                          ? DownloadButton(
+                              video: YtVideo(
+                                id: item.videoId,
+                                title: item.title,
+                                author: item.author,
+                                duration: item.duration,
+                                thumbnailUrl: item.thumbnailUrl,
+                              ),
+                              size: 48,
+                            )
+                          : const Icon(
+                              Icons.download_done_rounded,
+                              color: AppColors.success,
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              Positioned(
+                right: 4,
+                bottom: 4,
+                child: IconButton(
+                  onPressed: hub.toggleFullscreen,
+                  icon: const Icon(Icons.fullscreen_rounded, size: 28),
+                  color: Colors.white,
+                ),
+              ),
             ],
           ),
         ),
-      ],
+      ),
     );
   }
 
@@ -490,9 +607,29 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   // ---- fullscreen (landscape) -------------------------------------------------------
 
+  /// Free space kept under the seek bar (above the safe area). The X circle
+  /// that cancels a scrub lives here, and so does the swipe-up arrow.
+  static const double _bottomReserve = 40;
+
+  double _panelSwipe = 0;
+
+  void _openPanel() {
+    if (_panelOpen) return;
+    _hideTimer?.cancel();
+    setState(() => _panelOpen = true);
+  }
+
+  void _closePanel() {
+    if (!_panelOpen) return;
+    setState(() => _panelOpen = false);
+    _scheduleHide();
+  }
+
   Widget _fullscreen(PlayerHub hub, PlayItem item) {
-    final width = MediaQuery.sizeOf(context).width;
-    final panelW = math.min(380.0, width * 0.5);
+    final size = MediaQuery.sizeOf(context);
+    final bottomPad = MediaQuery.paddingOf(context).bottom;
+    final cardW = ((size.width - 40 - 36) / 3.6).clamp(150.0, 220.0).toDouble();
+    final panelH = 52 + cardW * 9 / 16 + 66 + bottomPad;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -546,31 +683,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         ),
                       ),
                       const Spacer(),
-                      _SeekBar(
-                        hub: hub,
-                        item: item,
-                        horizontalPadding: 20,
-                        onDragStart: () {
-                          _hideTimer?.cancel();
-                          if (!_controlsVisible) {
-                            setState(() => _controlsVisible = true);
-                          }
-                        },
-                        onDragEnd: (committed) {
-                          // After the picture zoomed into the video the
-                          // controls stay hidden until the screen is tapped.
-                          if (committed) {
-                            _hideControls();
-                          } else {
-                            _scheduleHide();
-                          }
-                        },
-                      ),
+                      // Timers, mute and exit-fullscreen sit just above the bar.
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+                        padding: const EdgeInsets.fromLTRB(20, 0, 10, 0),
                         child: Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
                           children: [
+                            _TimeLabel(hub: hub, item: item),
+                            const Spacer(),
                             IconButton(
                               onPressed: hub.toggleMute,
                               icon: Icon(
@@ -591,6 +710,28 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           ],
                         ),
                       ),
+                      _SeekBar(
+                        hub: hub,
+                        item: item,
+                        horizontalPadding: 20,
+                        showTimes: false,
+                        onDragStart: () {
+                          _hideTimer?.cancel();
+                          if (!_controlsVisible) {
+                            setState(() => _controlsVisible = true);
+                          }
+                        },
+                        onDragEnd: (committed) {
+                          // After the picture zoomed into the video the
+                          // controls stay hidden until the screen is tapped.
+                          if (committed) {
+                            _hideControls();
+                          } else {
+                            _scheduleHide();
+                          }
+                        },
+                      ),
+                      const SizedBox(height: _bottomReserve),
                     ],
                   ),
                 ),
@@ -604,9 +745,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         icon: const Icon(Icons.skip_previous_rounded, size: 44),
                         color: Colors.white,
                       ),
-                      const SizedBox(width: 26),
+                      const SizedBox(width: 52),
                       _PlayButton(hub: hub, size: 66),
-                      const SizedBox(width: 26),
+                      const SizedBox(width: 52),
                       IconButton(
                         onPressed: hub.hasNext ? hub.next : null,
                         icon: const Icon(Icons.skip_next_rounded, size: 44),
@@ -616,65 +757,110 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     ],
                   ),
                 ),
-                // The arrow on the right edge that brings in the Up next panel.
-                if (!_panelOpen)
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: GestureDetector(
-                      onTap: () => setState(() {
-                        _panelOpen = true;
-                        _hideTimer?.cancel();
-                      }),
-                      child: Container(
-                        width: 34,
-                        height: 76,
-                        decoration: const BoxDecoration(
-                          color: Colors.black54,
-                          borderRadius: BorderRadius.horizontal(
-                            left: Radius.circular(18),
+                // Swipe up from the bottom edge to bring in the panel. The
+                // arrow is only a hint: it does not react to taps.
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: bottomPad + _bottomReserve,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onVerticalDragStart: (_) => _panelSwipe = 0,
+                    onVerticalDragUpdate: (d) {
+                      _panelSwipe += d.delta.dy;
+                      if (_panelSwipe < -20) {
+                        _panelSwipe = 0;
+                        _openPanel();
+                      }
+                    },
+                    child: Align(
+                      alignment: Alignment.bottomCenter,
+                      child: Padding(
+                        padding: EdgeInsets.only(bottom: bottomPad + 4),
+                        child: const IgnorePointer(
+                          child: Icon(
+                            Icons.keyboard_arrow_up_rounded,
+                            color: Colors.white70,
+                            size: 32,
                           ),
-                        ),
-                        child: const Icon(
-                          Icons.chevron_left_rounded,
-                          color: Colors.white,
-                          size: 30,
                         ),
                       ),
                     ),
                   ),
+                ),
               ],
             ),
           ),
         ),
-        if (_panelOpen)
-          Positioned.fill(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => setState(() => _panelOpen = false),
-              child: const ColoredBox(color: Colors.black38),
-            ),
-          ),
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOutCubic,
-          top: 0,
-          bottom: 0,
-          right: _panelOpen ? 0 : -panelW - 20,
-          width: panelW,
+        // The rest of the UI darkens while the panel is open.
+        Positioned.fill(
           child: IgnorePointer(
             ignoring: !_panelOpen,
-            child: _SidePanel(
-              hub: hub,
-              onClose: () => setState(() => _panelOpen = false),
-              children: _upNextWidgets(
-                context,
-                hub,
-                afterPick: () => setState(() => _panelOpen = false),
+            child: AnimatedOpacity(
+              opacity: _panelOpen ? 1 : 0,
+              duration: const Duration(milliseconds: 260),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _closePanel,
+                onVerticalDragEnd: (d) {
+                  if ((d.primaryVelocity ?? 0) > 200) _closePanel();
+                },
+                child: const ColoredBox(color: Color(0xB8000000)),
               ),
             ),
           ),
         ),
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+          left: 0,
+          right: 0,
+          height: panelH,
+          bottom: _panelOpen ? 0 : -panelH - 20,
+          child: IgnorePointer(
+            ignoring: !_panelOpen,
+            child: _BottomPanel(
+              hub: hub,
+              cardWidth: cardW,
+              bottomPad: bottomPad,
+              onClose: _closePanel,
+            ),
+          ),
+        ),
       ],
+    );
+  }
+
+  Widget _pipPlaceholder() {
+    return Container(
+      color: Colors.black,
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.picture_in_picture_alt_rounded,
+            color: Colors.white70,
+            size: 34,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Playing in Picture in Picture',
+            style: TextStyle(
+              color: Colors.white70,
+              fontSize: 13.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: _pip.stop,
+            icon: const Icon(Icons.open_in_full_rounded, size: 16),
+            label: const Text('Bring it back here'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -684,142 +870,144 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final player = hub.player;
     return LayoutBuilder(
       builder: (context, c) {
-        return ScreenGestures(
-          enabled: _hold == _HoldMode.none,
-          onCircleStart: () =>
-              Notch.show('Volume', icon: Icons.volume_up_rounded),
-          onVolumeStep: (up) => hub.changeVolume(up ? 5 : -5),
-          onNext: () {
-            if (!hub.hasNext) return;
-            Notch.show('Next', icon: Icons.skip_next_rounded);
-            hub.next();
-          },
-          onPrevious: () {
-            Notch.show('Previous', icon: Icons.skip_previous_rounded);
-            hub.previous();
-          },
-          onPause: () {
-            if (!hub.isPlaying) return;
-            hub.pause();
-            Notch.show('Paused', icon: Icons.pause_rounded);
-          },
-          onPlay: () {
-            if (hub.isPlaying) return;
-            hub.play();
-            Notch.show('Playing', icon: Icons.play_arrow_rounded);
-          },
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _onTap,
-            onDoubleTapDown: (d) => _lastDoubleTap = d.localPosition,
-            onDoubleTap: () => _onDoubleTap(c.maxWidth),
-            onLongPressStart: (d) =>
-                _startHold(d.localPosition.dx > c.maxWidth / 2),
-            onLongPressEnd: (_) => _stopHold(),
-            onLongPressCancel: _stopHold,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                const ColoredBox(color: Colors.black),
-                StreamBuilder<int?>(
-                  stream: player.stream.width,
-                  initialData: player.state.width,
-                  builder: (context, snap) {
-                    final hasVideo = (snap.data ?? 0) > 0;
-                    if (!hasVideo) {
-                      return Stack(
-                        fit: StackFit.expand,
+        return Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _swipeDown,
+          onPointerMove: _swipeMove,
+          onPointerUp: _swipeUp,
+          onPointerCancel: _swipeCancel,
+          child: ScreenGestures(
+            enabled: _hold == _HoldMode.none,
+            onCircleStart: () =>
+                Notch.show('Volume', icon: Icons.volume_up_rounded),
+            onVolumeStep: (up) => hub.changeVolume(up ? 5 : -5),
+            onNext: () {
+              if (!hub.hasNext) return;
+              Notch.show('Next', icon: Icons.skip_next_rounded);
+              hub.next();
+            },
+            onPrevious: () {
+              Notch.show('Previous', icon: Icons.skip_previous_rounded);
+              hub.previous();
+            },
+            onPause: () {
+              if (!hub.isPlaying) return;
+              hub.pause();
+              Notch.show('Paused', icon: Icons.pause_rounded);
+            },
+            onPlay: () {
+              if (hub.isPlaying) return;
+              hub.play();
+              Notch.show('Playing', icon: Icons.play_arrow_rounded);
+            },
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _onTap,
+              onDoubleTapDown: (d) => _lastDoubleTap = d.localPosition,
+              onDoubleTap: () => _onDoubleTap(c.maxWidth),
+              onLongPressStart: (d) =>
+                  _startHold(d.localPosition.dx > c.maxWidth / 2),
+              onLongPressEnd: (_) => _stopHold(),
+              onLongPressCancel: _stopHold,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  const ColoredBox(color: Colors.black),
+                  StreamBuilder<int?>(
+                    stream: player.stream.width,
+                    initialData: player.state.width,
+                    builder: (context, snap) {
+                      final hasVideo = (snap.data ?? 0) > 0;
+                      if (!hasVideo) {
+                        return Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            ThumbImage(source: item.thumbnailUrl),
+                            const ColoredBox(color: Colors.black26),
+                          ],
+                        );
+                      }
+                      return CrossfadeVideo(hub: hub);
+                    },
+                  ),
+                  // While the small iOS window is playing the video, the picture
+                  // here is replaced by a note (so it is not drawn twice).
+                  ValueListenableBuilder<bool>(
+                    valueListenable: _pip.active,
+                    builder: (_, on, _) =>
+                        on ? _pipPlaceholder() : const SizedBox.shrink(),
+                  ),
+                  if (hub.isLoading)
+                    const Center(
+                      child: SizedBox(
+                        width: 38,
+                        height: 38,
+                        child: CircularProgressIndicator(strokeWidth: 3),
+                      ),
+                    ),
+                  if (hub.error != null && !hub.isLoading)
+                    Container(
+                      color: Colors.black87,
+                      alignment: Alignment.center,
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          ThumbImage(source: item.thumbnailUrl),
-                          const ColoredBox(color: Colors.black26),
-                        ],
-                      );
-                    }
-                    return CrossfadeVideo(hub: hub);
-                  },
-                ),
-                if (hub.isLoading)
-                  const Center(
-                    child: SizedBox(
-                      width: 38,
-                      height: 38,
-                      child: CircularProgressIndicator(strokeWidth: 3),
-                    ),
-                  ),
-                if (hub.error != null && !hub.isLoading)
-                  Container(
-                    color: Colors.black87,
-                    alignment: Alignment.center,
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.error_outline_rounded,
-                          color: Colors.white70,
-                          size: 30,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          hub.error!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
+                          const Icon(
+                            Icons.error_outline_rounded,
                             color: Colors.white70,
-                            fontSize: 13,
+                            size: 30,
                           ),
+                          const SizedBox(height: 8),
+                          Text(
+                            hub.error!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          FilledButton.icon(
+                            onPressed: hub.retryCurrent,
+                            icon: const Icon(Icons.refresh_rounded, size: 18),
+                            label: const Text('Try again'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (_hold != _HoldMode.none)
+                    Align(
+                      alignment: Alignment.topCenter,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: _Pill(
+                          icon: _hold == _HoldMode.forward
+                              ? Icons.fast_forward_rounded
+                              : Icons.fast_rewind_rounded,
+                          text:
+                              '${_settings.holdSpeed.toStringAsFixed(_settings.holdSpeed % 1 == 0 ? 0 : 1)}x',
                         ),
-                        const SizedBox(height: 10),
-                        FilledButton.icon(
-                          onPressed: hub.retryCurrent,
-                          icon: const Icon(Icons.refresh_rounded, size: 18),
-                          label: const Text('Try again'),
+                      ),
+                    ),
+                  if (_bubble != null)
+                    Align(
+                      alignment: _bubble!.forward
+                          ? Alignment.centerRight
+                          : Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 28),
+                        child: _Pill(
+                          icon: _bubble!.forward
+                              ? Icons.fast_forward_rounded
+                              : Icons.fast_rewind_rounded,
+                          text: '${_bubble!.seconds}s',
                         ),
-                      ],
-                    ),
-                  ),
-                if (_hold != _HoldMode.none)
-                  Align(
-                    alignment: Alignment.topCenter,
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: _Pill(
-                        icon: _hold == _HoldMode.forward
-                            ? Icons.fast_forward_rounded
-                            : Icons.fast_rewind_rounded,
-                        text:
-                            '${_settings.holdSpeed.toStringAsFixed(_settings.holdSpeed % 1 == 0 ? 0 : 1)}x',
                       ),
                     ),
-                  ),
-                if (_bubble != null)
-                  Align(
-                    alignment: _bubble!.forward
-                        ? Alignment.centerRight
-                        : Alignment.centerLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 28),
-                      child: _Pill(
-                        icon: _bubble!.forward
-                            ? Icons.fast_forward_rounded
-                            : Icons.fast_rewind_rounded,
-                        text: '${_bubble!.seconds}s',
-                      ),
-                    ),
-                  ),
-                if (!hub.isFullscreen)
-                  Positioned(
-                    right: 2,
-                    bottom: 2,
-                    child: IconButton(
-                      onPressed: hub.toggleFullscreen,
-                      icon: const Icon(Icons.fullscreen_rounded, size: 28),
-                      color: Colors.white,
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black38,
-                      ),
-                    ),
-                  ),
-              ],
+                  if (!hub.isFullscreen) _portraitOverlay(hub, item),
+                ],
+              ),
             ),
           ),
         );
@@ -840,7 +1028,8 @@ List<Widget> _upNextWidgets(
   final accent = Theme.of(context).colorScheme.primary;
   final queue = hub.queue;
   final upcoming = <int>[
-    for (var i = math.max(0, hub.index + 1); i < queue.length; i++) i,
+    if (!hub.autoRecommend)
+      for (var i = math.max(0, hub.index + 1); i < queue.length; i++) i,
   ];
   final recs = hub.autoRecommend ? hub.recommendations : <YtVideo>[];
 
@@ -930,56 +1119,221 @@ List<Widget> _upNextWidgets(
   return out;
 }
 
-class _SidePanel extends StatelessWidget {
-  final PlayerHub hub;
-  final VoidCallback onClose;
-  final List<Widget> children;
+/// One thumbnail card in the bottom panel.
+class _PanelCard {
+  final String title;
+  final String author;
+  final String thumb;
+  final VoidCallback onTap;
+  final Widget? trailing;
+  const _PanelCard({
+    required this.title,
+    required this.author,
+    required this.thumb,
+    required this.onTap,
+    this.trailing,
+  });
+}
 
-  const _SidePanel({
+/// The panel that slides up from the bottom in fullscreen: a row of
+/// thumbnails you scroll sideways. Songs from search show recommendations
+/// only; downloaded songs show what is next in their playlist.
+class _BottomPanel extends StatelessWidget {
+  final PlayerHub hub;
+  final double cardWidth;
+  final double bottomPad;
+  final VoidCallback onClose;
+
+  const _BottomPanel({
     required this.hub,
+    required this.cardWidth,
+    required this.bottomPad,
     required this.onClose,
-    required this.children,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0xF2100A0C),
-      child: SafeArea(
-        left: false,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 8, 6, 0),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Up next',
-                      style: TextStyle(
+    final accent = Theme.of(context).colorScheme.primary;
+    final recommended = hub.autoRecommend;
+    final queue = hub.queue;
+    final cards = <_PanelCard>[
+      if (recommended)
+        for (final v in hub.recommendations)
+          _PanelCard(
+            title: v.title,
+            author: v.author,
+            thumb: v.thumbnailUrl,
+            onTap: () {
+              hub.playRecommendation(v);
+              onClose();
+            },
+            trailing: DownloadButton(video: v, size: 34),
+          )
+      else
+        for (var i = math.max(0, hub.index + 1); i < queue.length; i++)
+          _PanelCard(
+            title: queue[i].title,
+            author: queue[i].author,
+            thumb: queue[i].thumbnailUrl,
+            onTap: () {
+              hub.playQueueIndex(i);
+              onClose();
+            },
+          ),
+    ];
+    final loading = recommended && hub.recommendationsLoading;
+    final thumbH = cardWidth * 9 / 16;
+
+    return GestureDetector(
+      onVerticalDragEnd: (d) {
+        if ((d.primaryVelocity ?? 0) > 200) onClose();
+      },
+      child: Material(
+        color: const Color(0xF2100A0C),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+        child: Padding(
+          padding: EdgeInsets.only(bottom: bottomPad),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 8),
+                child: Row(
+                  children: [
+                    Text(
+                      recommended ? 'Recommended' : 'Up next',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
-                        fontSize: 17,
+                        fontSize: 16.5,
                       ),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: onClose,
-                    icon: const Icon(Icons.chevron_right_rounded, size: 30),
-                    color: Colors.white,
-                  ),
-                ],
+                    const SizedBox(width: 10),
+                    if (loading)
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    const Spacer(),
+                    const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      color: Colors.white54,
+                      size: 26,
+                    ),
+                  ],
+                ),
               ),
-            ),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.only(bottom: 20),
-                children: children,
+              Expanded(
+                child: cards.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Text(
+                          loading
+                              ? 'Finding songs for you...'
+                              : recommended
+                              ? 'No recommendations yet'
+                              : 'Nothing queued after this song',
+                          style: const TextStyle(color: Colors.white38),
+                        ),
+                      )
+                    : ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        itemCount: cards.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 12),
+                        itemBuilder: (_, i) {
+                          final c = cards[i];
+                          return GestureDetector(
+                            onTap: c.onTap,
+                            child: SizedBox(
+                              width: cardWidth,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  SizedBox(
+                                    height: thumbH,
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        ClipRRect(
+                                          borderRadius: BorderRadius.circular(
+                                            12,
+                                          ),
+                                          child: ThumbImage(source: c.thumb),
+                                        ),
+                                        if (c.trailing != null)
+                                          Positioned(
+                                            right: 2,
+                                            bottom: 2,
+                                            child: c.trailing!,
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    c.title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12.5,
+                                      height: 1.25,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    c.author,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: accent.withValues(alpha: 0.9),
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+/// "1:23 / 3:45", shown above the seek bar in fullscreen.
+class _TimeLabel extends StatelessWidget {
+  final PlayerHub hub;
+  final PlayItem item;
+  const _TimeLabel({required this.hub, required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<Duration>(
+      stream: hub.player.stream.position,
+      initialData: hub.player.state.position,
+      builder: (context, snap) {
+        final dur = hub.player.state.duration;
+        final total = dur > Duration.zero
+            ? dur
+            : (item.duration ?? Duration.zero);
+        return Text(
+          '${formatDuration(snap.data ?? Duration.zero)} / '
+          '${formatDuration(total > Duration.zero ? total : null)}',
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 12.5,
+            fontWeight: FontWeight.w600,
+          ),
+        );
+      },
     );
   }
 }
@@ -1138,7 +1492,13 @@ class _SeekBar extends StatefulWidget {
   final PlayerHub hub;
   final PlayItem item;
   final double horizontalPadding;
+  final bool showTimes;
+
+  /// The little picture above the thumb while scrubbing (and the slide-up
+  /// zoom). Off in portrait, where only the bar and the X are shown.
+  final bool showPreview;
   final VoidCallback? onDragStart;
+
   /// [committed] is true when the finger was let go on the enlarged picture
   /// (it zoomed into the video).
   final void Function(bool committed)? onDragEnd;
@@ -1147,6 +1507,8 @@ class _SeekBar extends StatefulWidget {
     required this.hub,
     required this.item,
     this.horizontalPadding = 16,
+    this.showTimes = true,
+    this.showPreview = true,
     this.onDragStart,
     this.onDragEnd,
   });
@@ -1223,7 +1585,7 @@ class _SeekBarState extends State<_SeekBar> {
   bool get _hasVideo => (widget.hub.player.state.width ?? 0) > 0;
 
   Future<void> _ensurePreview() async {
-    if (!_hasVideo) return;
+    if (!widget.showPreview || !_hasVideo) return;
     final media = widget.hub.currentMedia;
     if (media == null) return;
     if (_preview == null) {
@@ -1363,7 +1725,7 @@ class _SeekBarState extends State<_SeekBar> {
       return;
     }
     final origin = _trackOrigin;
-    if (origin != null && _screen != null) {
+    if (widget.showPreview && origin != null && _screen != null) {
       final global = origin + local;
       // Entering: the finger has to reach the small picture above the thumb.
       // Staying: the big picture is centred on the screen, so once it is
@@ -1393,7 +1755,7 @@ class _SeekBarState extends State<_SeekBar> {
       _setEnlarged(false);
       _dragMs = ms;
     });
-    _queuePreviewSeek(ms.round());
+    if (widget.showPreview) _queuePreviewSeek(ms.round());
   }
 
   void _end() {
@@ -1556,19 +1918,20 @@ class _SeekBarState extends State<_SeekBar> {
       child: IgnorePointer(
         child: Stack(
           children: [
-            AnimatedPositioned(
-              duration: duration,
-              curve: committing ? Curves.easeInOutCubic : Curves.easeOutCubic,
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-              height: rect.height,
-              child: AnimatedOpacity(
-                duration: _fadeAnim,
-                opacity: _commitPhase == 2 ? 0 : 1,
-                child: _buildPreview(accent, ms, committing),
+            if (widget.showPreview)
+              AnimatedPositioned(
+                duration: duration,
+                curve: committing ? Curves.easeInOutCubic : Curves.easeOutCubic,
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                child: AnimatedOpacity(
+                  duration: _fadeAnim,
+                  opacity: _commitPhase == 2 ? 0 : 1,
+                  child: _buildPreview(accent, ms, committing),
+                ),
               ),
-            ),
             if (!committing)
               Positioned(
                 left: gx - _cancelSize / 2,
@@ -1842,22 +2205,23 @@ class _SeekBarState extends State<_SeekBar> {
                     );
                   },
                 ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        formatDuration(Duration(milliseconds: value.round())),
-                        style: timeStyle,
-                      ),
-                      Text(
-                        formatDuration(total > Duration.zero ? total : null),
-                        style: timeStyle,
-                      ),
-                    ],
+                if (widget.showTimes)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          formatDuration(Duration(milliseconds: value.round())),
+                          style: timeStyle,
+                        ),
+                        Text(
+                          formatDuration(total > Duration.zero ? total : null),
+                          style: timeStyle,
+                        ),
+                      ],
+                    ),
                   ),
-                ),
               ],
             ),
           ),

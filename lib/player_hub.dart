@@ -301,6 +301,12 @@ class PlayerHub extends ChangeNotifier {
     bool recommend,
   ) async {
     if (index < 0 || index >= items.length) return;
+    // Played from search: only the tapped song is queued. What follows comes
+    // from the recommendations, never from the other search results.
+    if (recommend) {
+      items = [items[index]];
+      index = 0;
+    }
     _skipToken++;
     _queue = items;
     _index = index;
@@ -508,7 +514,7 @@ class PlayerHub extends ChangeNotifier {
     final item = current;
     if (item == null) return null;
     final token = _token;
-    if (_autoRecommend && !_shuffle) {
+    if (_autoRecommend) {
       final pick = _pickRecommendation(item.videoId);
       if (pick == null) return null;
       final next = PlayItem.fromYt(pick);
@@ -679,7 +685,7 @@ class PlayerHub extends ChangeNotifier {
     final eased = Curves.easeInOutCubic.transform(t);
     crossfadeProgress.value = eased;
 
-    const base = 100.0;
+    final base = _baseVolume;
     unawaited(incoming.setVolume(base * sin(eased * pi / 2)));
     unawaited(outgoing.setVolume(base * cos(eased * pi / 2)));
     if (xf.linear >= 1) _endCrossfade(xf);
@@ -696,7 +702,7 @@ class PlayerHub extends ChangeNotifier {
       unawaited(out.stop());
       unawaited(out.setVolume(0));
     }
-    unawaited(_active.setVolume(100));
+    unawaited(_active.setVolume(_baseVolume));
     crossfadeProgress.value = 1;
     notifyListeners();
     if (Platform.isIOS) unawaited(_recoverAudio(wasPlaying));
@@ -885,7 +891,7 @@ class PlayerHub extends ChangeNotifier {
   Future<void> next() async {
     if (_queue.isEmpty || current == null) return;
     final skip = ++_skipToken;
-    if (_autoRecommend && !_shuffle) {
+    if (_autoRecommend) {
       if (await _playRecommended(skip)) return;
       if (skip != _skipToken) return;
     }
@@ -957,13 +963,11 @@ class PlayerHub extends ChangeNotifier {
       final v = await FlutterVolumeController.getVolume();
       if (v != null) {
         _volume = v * 100;
-        _muted = v <= 0;
       }
     } catch (_) {}
     try {
       _volumeSub = FlutterVolumeController.addListener((v) {
         _volume = v * 100;
-        _muted = v <= 0.001;
         notifyListeners();
       }, emitOnStart: false);
     } catch (e) {
@@ -972,17 +976,21 @@ class PlayerHub extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> toggleMute() async {
-    try {
-      await FlutterVolumeController.setMute(!_muted);
-    } catch (e) {
-      debugPrint('[PalmTunes] Could not mute -> $e');
-    }
-  }
+  /// Mute is in-app only: it silences Palm Tunes without touching the phone's
+  /// own volume.
+  double get _baseVolume => _muted ? 0.0 : 100.0;
+
+  Future<void> toggleMute() => setMuted(!_muted);
 
   Future<void> setMuted(bool value) async {
     if (_muted == value) return;
-    await toggleMute();
+    _muted = value;
+    notifyListeners();
+    try {
+      await _active.setVolume(_baseVolume);
+    } catch (e) {
+      debugPrint('[PalmTunes] Could not mute -> $e');
+    }
   }
 
   /// Moves the phone volume up or down. [delta] is in percent of the full

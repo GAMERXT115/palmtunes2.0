@@ -237,6 +237,10 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
   private var layerObs: NSKeyValueObservation?
   private var active = false
   private var wantPlaying = false
+  // When Picture in Picture last ended. Coming back from the small window
+  // makes the scene go inactive for a moment; without this, that blink
+  // started it again and threw you straight back out.
+  private var lastStopAt = Date.distantPast
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
@@ -276,6 +280,11 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
     case "dispose":
       DispatchQueue.main.async { self.teardown() }
       result(nil)
+    case "stop":
+      DispatchQueue.main.async {
+        if let c = self.pip, c.isPictureInPictureActive { c.stopPictureInPicture() }
+      }
+      result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -292,6 +301,7 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
   @objc private func leavingForeground() {
     guard let c = pip, !c.isPictureInPictureActive else { return }
     guard wantPlaying else { return }
+    guard Date().timeIntervalSince(lastStopAt) > 2.0 else { return }
     if c.isPictureInPicturePossible {
       c.startPictureInPicture()
     } else {
@@ -461,6 +471,7 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
 
   func pictureInPictureControllerDidStopPictureInPicture(_ c: AVPictureInPictureController) {
     active = false
+    lastStopAt = Date()
     let ms = Int((player?.currentTime().seconds ?? 0) * 1000)
     let playing = (player?.timeControlStatus ?? .paused) != .paused
     channel.invokeMethod("pipStopped", arguments: ["positionMs": ms, "playing": playing])
@@ -470,6 +481,7 @@ final class PipManager: NSObject, AVPictureInPictureControllerDelegate {
     _ c: AVPictureInPictureController,
     restoreUserInterfaceForPictureInPictureStopWithCompletionHandler handler: @escaping (Bool) -> Void
   ) {
+    lastStopAt = Date()
     handler(true)
   }
 }

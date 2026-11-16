@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
@@ -119,9 +120,8 @@ Future<Widget> _boot() async {
   final gestures = GestureBridge(hub);
   await gestures.load();
   // The camera stays off on the login and sign-up screens.
-  void syncCamera() => unawaited(
-    gestures.setSuspended(!auth.inApp || biometric.locked),
-  );
+  void syncCamera() =>
+      unawaited(gestures.setSuspended(!auth.inApp || biometric.locked));
   auth.addListener(syncCamera);
   biometric.addListener(syncCamera);
   syncCamera();
@@ -221,6 +221,11 @@ class AppShell extends StatelessWidget {
 
   static const double navBarHeight = 64;
 
+  /// Distance from the screen's bottom edge to the nav bar. It sits lower
+  /// than the full safe-area inset so it hugs the bottom; raise the 20 to
+  /// move it back up.
+  static double navBottom(double inset) => math.max(6.0, inset - 20);
+
   static const List<_NavItem> _items = [
     _NavItem(Icons.queue_music_rounded, 'List'),
     _NavItem(Icons.search_rounded, 'Search'),
@@ -262,7 +267,7 @@ class AppShell extends StatelessWidget {
             Positioned(
               left: 12,
               right: 12,
-              bottom: bottomInset + navBarHeight + 18,
+              bottom: navBottom(bottomInset) + navBarHeight + 10,
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 220),
                 transitionBuilder: (child, anim) => SlideTransition(
@@ -280,7 +285,7 @@ class AppShell extends StatelessWidget {
             Positioned(
               left: 12,
               right: 12,
-              bottom: bottomInset + 8,
+              bottom: navBottom(bottomInset),
               child: _GlassNavBar(
                 items: _items,
                 selected: nav.index,

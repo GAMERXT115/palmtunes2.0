@@ -5,6 +5,7 @@ import 'dart:math' show min;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart' show SpringDescription;
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -1785,22 +1786,6 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                   ],
                 ),
               ),
-              if (store.videos.isNotEmpty)
-                IconButton(
-                  tooltip: 'Delete all downloads',
-                  onPressed: () async {
-                    final ok = await confirmDelete(
-                      context,
-                      title: 'Delete all downloads?',
-                      message:
-                          'All ${store.videos.length} songs will be removed from this phone. This cannot be undone.',
-                      confirmLabel: 'Delete all',
-                    );
-                    if (ok) await store.deleteAllDownloads();
-                  },
-                  icon: const Icon(Icons.delete_sweep_rounded),
-                  color: Colors.white54,
-                ),
             ],
           ),
           const SizedBox(height: 10),
@@ -1826,6 +1811,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                     child: ListView.builder(
                       key: _listKey,
                       controller: _listScroll,
+                      physics: const _SpringScrollPhysics(),
                       padding: const EdgeInsets.only(bottom: 170),
                       itemCount:
                           videos.length +
@@ -1860,9 +1846,8 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                               .playDownloaded(videos, i),
                           onRename: () => _renameSong(v),
                           onDelete: () => _deleteSong(v),
-                          onSearch: () => context
-                              .read<NavController>()
-                              .searchFor(v.title),
+                          onSearch: () =>
+                              context.read<NavController>().searchFor(v.title),
                           onMoveToAll: _selected == null
                               ? null
                               : () => _moveToAll(v),
@@ -1923,6 +1908,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                   },
                   child: ListView(
                     controller: _barScroll,
+                    physics: const _SpringScrollPhysics(),
                     scrollDirection: Axis.horizontal,
                     clipBehavior: Clip.hardEdge,
                     padding: const EdgeInsets.symmetric(
@@ -1956,6 +1942,23 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
       ),
     );
   }
+}
+
+/// Elastic, springy scrolling: pull past the end and it eases back with a
+/// soft little bounce on every platform (not just iPhone).
+class _SpringScrollPhysics extends BouncingScrollPhysics {
+  const _SpringScrollPhysics({super.parent});
+
+  @override
+  _SpringScrollPhysics applyTo(ScrollPhysics? ancestor) =>
+      _SpringScrollPhysics(parent: buildParent(ancestor));
+
+  @override
+  SpringDescription get spring =>
+      SpringDescription.withDampingRatio(mass: 0.5, stiffness: 120, ratio: 0.8);
+
+  @override
+  double get dragStartDistanceMotionThreshold => 3.5;
 }
 
 class _QueuePanel extends StatelessWidget {
@@ -2702,7 +2705,6 @@ class _DeleteCategoryDialog extends StatelessWidget {
     );
   }
 }
-
 
 class _Thumb extends StatelessWidget {
   final DownloadedVideo video;

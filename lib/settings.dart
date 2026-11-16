@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'account_settings.dart';
+import 'cloud_sync.dart';
 import 'downloads.dart';
 import 'gesture_bridge.dart';
 import 'legal_docs.dart';
@@ -192,6 +193,8 @@ class SettingsStore extends ChangeNotifier {
 // Screen
 // ===========================================================================
 
+enum _WipeChoice { cancel, deviceOnly, deviceAndCloud }
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
@@ -242,11 +245,46 @@ class SettingsScreen extends StatelessWidget {
     if (ok == true) settings.setAccent(picked);
   }
 
+  /// Asks what to wipe, then deletes every download (and, if chosen, the
+  /// cloud copies as well).
+  Future<void> _deleteDownloads(BuildContext context) async {
+    final store = context.read<DownloadsStore>();
+    final cloud = context.read<CloudSyncStore>();
+    final choice = await _askWipeChoice(
+      context,
+      songs: store.videos.length,
+      cloudOnly: cloud.ghosts.length,
+    );
+    if (choice == _WipeChoice.cancel) return;
+
+    // Work out which cloud saves go before the files are removed.
+    final cloudIds = <String>{
+      if (choice == _WipeChoice.deviceAndCloud) ...[
+        for (final v in store.videos)
+          if (cloud.canOfferCloudDelete(v.videoId)) v.videoId,
+        for (final g in cloud.ghosts) g.videoId,
+      ],
+    };
+
+    // The files go first, so a song is never uploaded again in between.
+    await store.deleteAllDownloads();
+    for (final id in cloudIds) {
+      await cloud.removeFromCloud(id);
+    }
+    Notch.show(
+      choice == _WipeChoice.deviceAndCloud
+          ? 'Deleted downloads and cloud saves'
+          : 'Deleted all downloads',
+      icon: Icons.delete_sweep_rounded,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = context.watch<SettingsStore>();
     final g = context.watch<GestureBridge>();
     final downloads = context.watch<DownloadsStore>();
+    final cloud = context.watch<CloudSyncStore>();
     final accent = Theme.of(context).colorScheme.primary;
 
     return ListView(
@@ -292,7 +330,8 @@ class SettingsScreen extends StatelessWidget {
             ),
             _SwitchRow(
               title: 'Flip hands',
-              subtitle: 'Turn on if the drawn hand moves the opposite way to yours',
+              subtitle:
+                  'Turn on if the drawn hand moves the opposite way to yours',
               value: g.flipHands,
               onChanged: g.setFlipHands,
             ),
@@ -334,8 +373,7 @@ class SettingsScreen extends StatelessWidget {
             if (Platform.isIOS)
               _SwitchRow(
                 title: 'Picture in Picture',
-                subtitle:
-                    'Keep the video in a small window when you leave the app. Loads the video a second time while the player is open',
+                subtitle: 'Keep the video in a small window when you leave the app. Loads the video a second time while the player is open',
                 value: s.pipEnabled,
                 onChanged: s.setPip,
               ),
@@ -435,6 +473,13 @@ class SettingsScreen extends StatelessWidget {
               value:
                   '${downloadsLabel(downloads.videos.length)} · ${formatBytes(downloads.totalBytes)}',
             ),
+            if (downloads.videos.isNotEmpty || cloud.ghosts.isNotEmpty)
+              _LinkRow(
+                icon: Icons.delete_sweep_rounded,
+                title: 'Delete downloads',
+                danger: true,
+                onTap: () => _deleteDownloads(context),
+              ),
           ],
         ),
 
@@ -518,6 +563,106 @@ class SettingsScreen extends StatelessWidget {
         return 'Stopped${g.lastError == null ? '' : ': ${g.lastError}'}';
     }
   }
+}
+
+/// The "Delete downloads" dialog: this phone only, or the cloud as well.
+Future<_WipeChoice> _askWipeChoice(
+  BuildContext context, {
+  required int songs,
+  required int cloudOnly,
+}) async {
+  final danger = Colors.redAccent.shade200;
+  final result = await showDialog<_WipeChoice>(
+    context: context,
+    builder: (ctx) => Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: GlassContainer(
+          borderRadius: 20,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: danger.withValues(alpha: 0.15),
+                    ),
+                    child: Icon(
+                      Icons.warning_amber_rounded,
+                      color: danger,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Delete downloads?',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                songs > 0
+                    ? 'All $songs downloaded song${songs == 1 ? '' : 's'} will be removed from this phone. You can also remove the cloud copies, which disappear from your other devices too. This cannot be undone.'
+                    : 'You have $cloudOnly song${cloudOnly == 1 ? '' : 's'} saved only in the cloud. Delete ${cloudOnly == 1 ? 'it' : 'them'} from the cloud? ${cloudOnly == 1 ? 'It' : 'They'} will disappear from your other devices too. This cannot be undone.',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  height: 1.4,
+                  fontSize: 13.5,
+                ),
+              ),
+              const SizedBox(height: 18),
+              // Stacked on a phone: three buttons do not fit in one row.
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: danger,
+                  minimumSize: const Size.fromHeight(44),
+                ),
+                onPressed: () => Navigator.pop(ctx, _WipeChoice.deviceAndCloud),
+                child: const Text('Delete downloads & cloud'),
+              ),
+              if (songs > 0) ...[
+                const SizedBox(height: 8),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: danger.withValues(alpha: 0.55),
+                    minimumSize: const Size.fromHeight(44),
+                  ),
+                  onPressed: () => Navigator.pop(ctx, _WipeChoice.deviceOnly),
+                  child: const Text('Delete downloads'),
+                ),
+              ],
+              const SizedBox(height: 8),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                  minimumSize: const Size.fromHeight(44),
+                  side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
+                ),
+                onPressed: () => Navigator.pop(ctx, _WipeChoice.cancel),
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  return result ?? _WipeChoice.cancel;
 }
 
 class _Group extends StatelessWidget {
@@ -764,33 +909,38 @@ class _LinkRow extends StatelessWidget {
   final IconData icon;
   final String title;
   final VoidCallback onTap;
+  final bool danger;
   const _LinkRow({
     required this.icon,
     required this.title,
     required this.onTap,
+    this.danger = false,
   });
 
   @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    borderRadius: BorderRadius.circular(10),
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 11),
-      child: Row(
-        children: [
-          Icon(icon, size: 19, color: Colors.white54),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(color: Colors.white, fontSize: 14.5),
+  Widget build(BuildContext context) {
+    final color = danger ? Colors.redAccent.shade200 : Colors.white;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        child: Row(
+          children: [
+            Icon(icon, size: 19, color: danger ? color : Colors.white54),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(color: color, fontSize: 14.5),
+              ),
             ),
-          ),
-          const Icon(Icons.chevron_right_rounded, color: Colors.white30),
-        ],
+            const Icon(Icons.chevron_right_rounded, color: Colors.white30),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _GestureCheatSheet extends StatelessWidget {
@@ -870,7 +1020,6 @@ class _GestureCheatSheet extends StatelessWidget {
   }
 }
 
-
 class _HamTechRow extends StatelessWidget {
   final VoidCallback onTap;
   const _HamTechRow({required this.onTap});
@@ -890,7 +1039,11 @@ class _HamTechRow extends StatelessWidget {
               children: [
                 Text(
                   'Built by Ham-Tech',
-                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 SizedBox(height: 2),
                 Text(
@@ -938,7 +1091,11 @@ class _LaserBadgeState extends State<_LaserBadge>
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.primary;
     return CustomPaint(
-      foregroundPainter: _LaserPainter(progress: _ctrl, color: accent, radius: 11),
+      foregroundPainter: _LaserPainter(
+        progress: _ctrl,
+        color: accent,
+        radius: 11,
+      ),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
@@ -971,13 +1128,22 @@ class _LaserPainter extends CustomPainter {
   final Color color;
   final double radius;
 
-  _LaserPainter({required this.progress, required this.color, required this.radius})
-    : super(repaint: progress);
+  _LaserPainter({
+    required this.progress,
+    required this.color,
+    required this.radius,
+  }) : super(repaint: progress);
 
   static const int _pieces = 28;
   static const double _tailFraction = 0.3;
 
-  void _drawSegment(Canvas canvas, PathMetric metric, double start, double end, Paint paint) {
+  void _drawSegment(
+    Canvas canvas,
+    PathMetric metric,
+    double start,
+    double end,
+    Paint paint,
+  ) {
     final len = metric.length;
     final span = end - start;
     if (span <= 0) return;

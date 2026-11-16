@@ -29,6 +29,10 @@ class PipController with WidgetsBindingObserver {
   PipController(this.hub, this.settings);
 
   bool _on = false;
+
+  /// True while the small iOS Picture in Picture window is showing the
+  /// video. The player screen swaps its own picture for a note meanwhile.
+  final ValueNotifier<bool> active = ValueNotifier<bool>(false);
   bool _announcedReady = false;
   String? _preparedFor;
   Timer? _sync;
@@ -63,6 +67,9 @@ class PipController with WidgetsBindingObserver {
       debugPrint('[PalmTunes] PiP $method failed -> $e');
     }
   }
+
+  /// Closes the small window so the video plays here again.
+  Future<void> stop() => _invoke('stop');
 
   void _onHub() {
     if (!_on) return;
@@ -115,8 +122,12 @@ class PipController with WidgetsBindingObserver {
         final state = args['state'] as String? ?? '';
         final message = args['message'] as String? ?? '';
         debugPrint('[PalmTunes] PiP $state: $message');
+        if (state == 'started') active.value = true;
         if (state == 'error') {
-          Notch.show('PiP: $message', icon: Icons.picture_in_picture_alt_rounded);
+          Notch.show(
+            'PiP: $message',
+            icon: Icons.picture_in_picture_alt_rounded,
+          );
         } else if (state == 'ready' && !_announcedReady) {
           _announcedReady = true;
           Notch.show(
@@ -132,11 +143,13 @@ class PipController with WidgetsBindingObserver {
           unawaited(hub.pause());
         }
       case 'pipStopped':
+        active.value = false;
         final ms = (args['positionMs'] as num?)?.toInt();
         final playing = args['playing'] == true;
         if (ms != null) {
           final diff = (hub.player.state.position.inMilliseconds - ms).abs();
-          if (diff > 1500) unawaited(hub.player.seek(Duration(milliseconds: ms)));
+          if (diff > 1500)
+            unawaited(hub.player.seek(Duration(milliseconds: ms)));
         }
         if (playing && !hub.isPlaying) unawaited(hub.play());
         if (!playing && hub.isPlaying) unawaited(hub.pause());

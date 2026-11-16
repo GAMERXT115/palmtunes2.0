@@ -139,7 +139,8 @@ class _ListOp {
 /// merged in as it arrives. There is no separate cloud list: both sides are
 /// made equal.
 class SongListStore extends ChangeNotifier {
-  static const _prefsKey = 'palm_tunes_song_list'; // before accounts were separated
+  static const _prefsKey =
+      'palm_tunes_song_list'; // before accounts were separated
   static String _keyFor(String scope) => 'palm_tunes_song_list_$scope';
   static const _probeHost = 'firestore.googleapis.com';
   static const _settle = Duration(seconds: 30);
@@ -868,8 +869,7 @@ class _ListScreenState extends State<ListScreen> {
           files: [
             XFile(
               file.path,
-              mimeType:
-                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
               name: 'Palm_Tunes_List_${_dateStamp()}.xlsx',
             ),
           ],
