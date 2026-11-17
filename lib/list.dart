@@ -13,7 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import 'auth_store.dart';
-import 'bass_meter.dart';
+// import 'bass_meter.dart'; // only needed by the header logo (commented out below)
 import 'player_hub.dart';
 import 'search.dart';
 import 'ui.dart';
@@ -948,7 +948,7 @@ class _ListScreenState extends State<ListScreen> {
     final accent = Theme.of(context).colorScheme.primary;
     final pending = store.pending;
     final completed = store.completed;
-    final meter = context.read<BassMeter>();
+    // final meter = context.read<BassMeter>(); // only the header logo used this
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -957,8 +957,11 @@ class _ListScreenState extends State<ListScreen> {
         children: [
           Row(
             children: [
-              BassLogo(level: meter.level, color: accent, size: 38),
-              const SizedBox(width: 12),
+              // Header logo, switched off for now (uncomment these two lines
+              // and the `meter` line above plus the bass_meter.dart import to
+              // bring it back):
+              // BassLogo(level: meter.level, color: accent, size: 38),
+              // const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

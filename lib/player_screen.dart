@@ -619,20 +619,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _openPanel() {
     if (_panelOpen) return;
     _hideTimer?.cancel();
-    setState(() => _panelOpen = true);
+    // The buttons and seek bar hide so they do not show through the panel.
+    setState(() {
+      _panelOpen = true;
+      _controlsVisible = false;
+    });
   }
 
   void _closePanel() {
     if (!_panelOpen) return;
     setState(() => _panelOpen = false);
-    _scheduleHide();
   }
 
   Widget _fullscreen(PlayerHub hub, PlayItem item) {
     final size = MediaQuery.sizeOf(context);
     final bottomPad = MediaQuery.paddingOf(context).bottom;
-    final cardW = ((size.width - 40 - 36) / 3.6).clamp(150.0, 220.0).toDouble();
-    final panelH = 52 + cardW * 9 / 16 + 66 + bottomPad;
+    // The panel's top edge sits a little below the middle of the screen.
+    final panelH = size.height * 0.45;
+    final inner = bottomPad * 0.5 + 10;
+    final thumbH = (panelH - 40 - inner - 40).clamp(60.0, 150.0).toDouble();
+    final cardW = thumbH * 16 / 9;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -809,7 +815,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 onVerticalDragEnd: (d) {
                   if ((d.primaryVelocity ?? 0) > 200) _closePanel();
                 },
-                child: const ColoredBox(color: Color(0xB8000000)),
+                child: const ColoredBox(color: Colors.transparent),
               ),
             ),
           ),
@@ -826,7 +832,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             child: _BottomPanel(
               hub: hub,
               cardWidth: cardW,
-              bottomPad: bottomPad,
+              bottomPad: inner,
               onClose: _closePanel,
             ),
           ),
@@ -1183,124 +1189,140 @@ class _BottomPanel extends StatelessWidget {
     ];
     final loading = recommended && hub.recommendationsLoading;
     final thumbH = cardWidth * 9 / 16;
+    final safe = MediaQuery.paddingOf(context);
+    final left = math.max(20.0, safe.left + 12);
+    final right = math.max(20.0, safe.right + 12);
 
     return GestureDetector(
       onVerticalDragEnd: (d) {
         if ((d.primaryVelocity ?? 0) > 200) onClose();
       },
       child: Material(
-        color: const Color(0xF2100A0C),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
-        child: Padding(
-          padding: EdgeInsets.only(bottom: bottomPad),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 10, 20, 8),
-                child: Row(
-                  children: [
-                    Text(
-                      recommended ? 'Recommended' : 'Up next',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 16.5,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    if (loading)
-                      const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    const Spacer(),
-                    const Icon(
-                      Icons.keyboard_arrow_down_rounded,
-                      color: Colors.white54,
-                      size: 26,
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: cards.isEmpty
-                    ? Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        child: Text(
-                          loading
-                              ? 'Finding songs for you...'
-                              : recommended
-                              ? 'No recommendations yet'
-                              : 'Nothing queued after this song',
-                          style: const TextStyle(color: Colors.white38),
+        type: MaterialType.transparency,
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.transparent,
+                Color(0x99000000),
+                Color(0xEB000000),
+              ],
+              stops: [0, 0.45, 1],
+            ),
+          ),
+          child: Padding(
+            padding: EdgeInsets.only(bottom: bottomPad),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: EdgeInsets.fromLTRB(left, 4, right, 6),
+                  child: Row(
+                    children: [
+                      Text(
+                        recommended ? 'Recommended' : 'Up next',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
                         ),
-                      )
-                    : ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        itemCount: cards.length,
-                        separatorBuilder: (_, _) => const SizedBox(width: 12),
-                        itemBuilder: (_, i) {
-                          final c = cards[i];
-                          return GestureDetector(
-                            onTap: c.onTap,
-                            child: SizedBox(
-                              width: cardWidth,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  SizedBox(
-                                    height: thumbH,
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        ClipRRect(
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                          child: ThumbImage(source: c.thumb),
-                                        ),
-                                        if (c.trailing != null)
-                                          Positioned(
-                                            right: 2,
-                                            bottom: 2,
-                                            child: c.trailing!,
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    c.title,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 12.5,
-                                      height: 1.25,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    c.author,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      color: accent.withValues(alpha: 0.9),
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
                       ),
-              ),
-            ],
+                      const SizedBox(width: 10),
+                      if (loading)
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      const Spacer(),
+                      const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        color: Colors.white54,
+                        size: 26,
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: cards.isEmpty
+                      ? Padding(
+                          padding: EdgeInsets.fromLTRB(left, 0, right, 0),
+                          child: Text(
+                            loading
+                                ? 'Finding songs for you...'
+                                : recommended
+                                ? 'No recommendations yet'
+                                : 'Nothing queued after this song',
+                            style: const TextStyle(color: Colors.white38),
+                          ),
+                        )
+                      : ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          padding: EdgeInsets.fromLTRB(left, 0, right, 0),
+                          itemCount: cards.length,
+                          separatorBuilder: (_, _) => const SizedBox(width: 12),
+                          itemBuilder: (_, i) {
+                            final c = cards[i];
+                            return GestureDetector(
+                              onTap: c.onTap,
+                              child: SizedBox(
+                                width: cardWidth,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    SizedBox(
+                                      height: thumbH,
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
+                                            child: ThumbImage(source: c.thumb),
+                                          ),
+                                          if (c.trailing != null)
+                                            Positioned(
+                                              right: 2,
+                                              bottom: 2,
+                                              child: c.trailing!,
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      c.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 12.5,
+                                        height: 1.25,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      c.author,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: accent.withValues(alpha: 0.9),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
