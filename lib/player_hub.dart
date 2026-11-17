@@ -605,7 +605,7 @@ class PlayerHub extends ChangeNotifier {
     _plan = null;
     if (_xf == null) {
       final s = _spare;
-      if (s != null) unawaited(s.stop());
+      if (s != null) unawaited(s.pause());
     }
   }
 
@@ -717,7 +717,10 @@ class PlayerHub extends ChangeNotifier {
     final wasPlaying = _active.state.playing;
     final out = _spare;
     if (out != null) {
-      unawaited(out.stop());
+      // Pause, not stop: stopping a player that has been playing closes its
+      // sound output, and on iPhone that can drop the audio session for the
+      // song that is still playing (the little pause at the end of a fade).
+      unawaited(out.pause());
       unawaited(out.setVolume(0));
     }
     unawaited(_active.setVolume(_baseVolume));
@@ -726,19 +729,22 @@ class PlayerHub extends ChangeNotifier {
     if (Platform.isIOS) unawaited(_recoverAudio(wasPlaying));
   }
 
-  /// On iPhone, stopping the song that faded out can release the phone's audio
-  /// session, which silences the new song right when the fade ends (it looked
-  /// like the song paused at the end of the crossfade). Take the session back
-  /// and restart the new song's sound output.
+  /// Safety net for iPhone: take the audio session back after a fade, and
+  /// only if the new song really is stuck (playing but not moving) restart
+  /// it. A song that is moving normally is left completely alone, so there is
+  /// no gap.
   Future<void> _recoverAudio(bool wasPlaying) async {
-    await Future<void>.delayed(const Duration(milliseconds: 250));
     try {
       final session = await AudioSession.instance;
       await session.setActive(true);
     } catch (_) {}
-    if (!wasPlaying || _xf != null) return;
+    if (!wasPlaying) return;
+    final p = _active;
+    final before = p.state.position;
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    if (_xf != null || !identical(p, _active) || !p.state.playing) return;
+    if (p.state.position - before > const Duration(milliseconds: 400)) return;
     try {
-      final p = _active;
       await p.pause();
       await p.play();
     } catch (_) {}

@@ -283,7 +283,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // ---- swipe on the picture ------------------------------------------------------
   // Portrait: drag the picture down to close the player into the mini player,
   // swipe it up to go fullscreen. Fullscreen: swipe down to go back to
-  // portrait. A Listener is used so this never fights the tap, double-tap,
+  // portrait; swipe up to bring in the Up next panel. A Listener is used so
+  // this never fights the tap, double-tap,
   // hold and circle gestures on the picture.
 
   int? _swipePointer;
@@ -324,6 +325,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _swipePointer = null;
         _swipeMode = 2;
         _hub.setFullscreen(false);
+      } else if (_swipeSum.dy < -70) {
+        // Swipe up anywhere on the picture or an empty spot: Up next.
+        _swipePointer = null;
+        _swipeMode = 2;
+        _openPanel();
       }
     } else if (_swipeSum.dy < -70) {
       _swipePointer = null;
