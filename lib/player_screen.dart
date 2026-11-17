@@ -409,11 +409,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         ),
         Column(
           children: [
-            // The picture runs edge to edge from the very top of the screen.
-            ClipRRect(
-              borderRadius: const BorderRadius.vertical(
-                bottom: Radius.circular(20),
-              ),
+            // Full width, starting just below the notch / status bar.
+            Padding(
+              padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
               child: AspectRatio(
                 aspectRatio: 16 / 9,
                 child: _surface(hub, item),
@@ -493,7 +491,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// Back arrow, download state and fullscreen, drawn on top of the picture.
   /// Tapping the picture shows or hides them (it no longer pauses).
   Widget _portraitOverlay(PlayerHub hub, PlayItem item) {
-    final top = MediaQuery.paddingOf(context).top;
     return Positioned.fill(
       child: IgnorePointer(
         ignoring: !_pControls,
@@ -521,7 +518,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 ),
               ),
               Positioned(
-                top: top,
+                top: 4,
                 left: 4,
                 right: 4,
                 child: Row(
@@ -1027,10 +1024,7 @@ List<Widget> _upNextWidgets(
 }) {
   final accent = Theme.of(context).colorScheme.primary;
   final queue = hub.queue;
-  final upcoming = <int>[
-    if (!hub.autoRecommend)
-      for (var i = math.max(0, hub.index + 1); i < queue.length; i++) i,
-  ];
+  final upcoming = hub.upcomingIndices;
   final recs = hub.autoRecommend ? hub.recommendations : <YtVideo>[];
 
   Widget header(String text, {bool loading = false}) => Padding(
@@ -1170,7 +1164,7 @@ class _BottomPanel extends StatelessWidget {
             trailing: DownloadButton(video: v, size: 34),
           )
       else
-        for (var i = math.max(0, hub.index + 1); i < queue.length; i++)
+        for (final i in hub.upcomingIndices)
           _PanelCard(
             title: queue[i].title,
             author: queue[i].author,

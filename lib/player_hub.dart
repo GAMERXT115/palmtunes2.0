@@ -144,6 +144,9 @@ class PlayerHub extends ChangeNotifier {
   final Set<String> _played = {};
   final List<int> _history = [];
   final Set<int> _shuffleSeen = {};
+  // The songs that will play next while shuffle is on, in the order they
+  // will play. Decided ahead of time so "Up next" shows the truth.
+  final List<int> _shuffleOrder = [];
   Future<List<YtVideo>>? _relatedFuture;
   String? _relatedFor;
   List<YtVideo> _related = [];
@@ -181,6 +184,20 @@ class PlayerHub extends ChangeNotifier {
   List<YtVideo> get recommendations {
     final id = current?.videoId;
     return _related.where((v) => v.id != id).toList();
+  }
+
+  /// Queue positions that will play after the current song, in play order:
+  /// the shuffled order while shuffle is on, the plain order otherwise.
+  /// (Songs from search follow the recommendations instead, so none here.)
+  List<int> get upcomingIndices {
+    if (_autoRecommend) return const [];
+    if (_shuffle) {
+      _ensureShuffleOrder();
+      return List.unmodifiable(_shuffleOrder);
+    }
+    return [
+      for (var i = _index < 0 ? 0 : _index + 1; i < _queue.length; i++) i,
+    ];
   }
 
   bool get hasNext {
@@ -314,6 +331,7 @@ class PlayerHub extends ChangeNotifier {
     _played.clear();
     _history.clear();
     _shuffleSeen.clear();
+    _shuffleOrder.clear();
     _relatedFuture = null;
     _relatedFor = null;
     _related = [];
@@ -852,22 +870,26 @@ class PlayerHub extends ChangeNotifier {
     await _playIndex(i);
   }
 
-  int _pickShuffle() {
-    _shuffleSeen.add(_index);
-    var pool = [
-      for (var i = 0; i < _queue.length; i++)
-        if (!_shuffleSeen.contains(i)) i,
-    ];
-    if (pool.isEmpty) {
-      _shuffleSeen
-        ..clear()
-        ..add(_index);
-      pool = [
+  /// Keeps [_shuffleOrder] valid: drops the song now playing and anything out
+  /// of range, and makes a fresh random round when it has run out.
+  void _ensureShuffleOrder() {
+    _shuffleOrder.removeWhere(
+      (i) => i == _index || i < 0 || i >= _queue.length,
+    );
+    if (_shuffleOrder.isEmpty && _queue.length > 1) {
+      final fresh = [
         for (var i = 0; i < _queue.length; i++)
           if (i != _index) i,
-      ];
+      ]..shuffle(_random);
+      _shuffleOrder.addAll(fresh);
     }
-    return pool[_random.nextInt(pool.length)];
+  }
+
+  /// The song shuffle will play next. It only looks: the song leaves the
+  /// order once it actually starts playing.
+  int _pickShuffle() {
+    _ensureShuffleOrder();
+    return _shuffleOrder.first;
   }
 
   /// Tries the current song again from the start (after an error).
@@ -916,6 +938,7 @@ class PlayerHub extends ChangeNotifier {
     if (current == null) return;
     _skipToken++;
     if (_shuffle && _history.isNotEmpty) {
+      if (_index >= 0) _shuffleOrder.insert(0, _index);
       await _playIndex(_history.removeLast());
       return;
     }
@@ -937,7 +960,10 @@ class PlayerHub extends ChangeNotifier {
   void toggleShuffle() {
     _shuffle = !_shuffle;
     _shuffleSeen.clear();
+    _shuffleOrder.clear();
     _history.clear();
+    // A song already lined up for the crossfade was picked the old way.
+    _dropPlan();
     notifyListeners();
   }
 
@@ -1056,6 +1082,7 @@ class PlayerHub extends ChangeNotifier {
     _played.clear();
     _history.clear();
     _shuffleSeen.clear();
+    _shuffleOrder.clear();
     _relatedFuture = null;
     _relatedFor = null;
     _related = [];
